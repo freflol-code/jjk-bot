@@ -1,8 +1,5 @@
 """
 Магическая Битва: Токио — RPG-бот для Telegram по мотивам Jujutsu Kaisen.
-
-ВРЕМЕННЫЙ обработчик capture_file_id — сборщик file_id для картинок/гифок.
-После сбора всех id его можно удалить (см. пометки в коде).
 """
 import logging
 import time
@@ -35,6 +32,7 @@ import equipment
 import leaderboard
 import story
 import raid
+from gifs_data import TECHNIQUE_GIFS
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -525,13 +523,36 @@ def district_image_for_x(x: int) -> str | None:
 
 async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                           effect_key: str | None, ttl: int = EFFECT_GIF_TTL_SECONDS):
+    """Отправляет гифку эффекта/техники.
+    Приоритет:
+      1. file_id из TECHNIQUE_GIFS (для техник)
+      2. локальный файл в assets/techniques/ или assets/effects/
+    """
     if not effect_key:
         return
-    path = None
+
+    # --- Ветка техник ---
     if effect_key.startswith("technique:"):
         tname = effect_key.split(":", 1)[1]
+
+        # 1. file_id из словаря
+        file_id = TECHNIQUE_GIFS.get(tname)
+        if file_id:
+            try:
+                msg = await context.bot.send_animation(chat_id=chat_id, animation=file_id)
+                context.job_queue.run_once(
+                    delete_message_job, when=ttl,
+                    data={"chat_id": chat_id, "message_id": msg.message_id},
+                    name=f"del_effect_{chat_id}_{msg.message_id}",
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Не удалось отправить file_id для {tname}: {e}")
+
+        # 2. локальный файл по имени техники
         path = assets.get_technique_image(tname)
         if not path:
+            # 3. локальная заглушка по редкости
             t = gacha.get_technique(tname)
             if t:
                 rarity_map = {
@@ -544,9 +565,25 @@ async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                 key = rarity_map.get(t["rarity"])
                 if key:
                     path = assets.get_technique_image(key)
-    else:
-        path = assets.get_effect_image(effect_key)
+        if not path:
+            return
+        try:
+            with open(path, "rb") as media_file:
+                if assets.is_animation(path):
+                    msg = await context.bot.send_animation(chat_id=chat_id, animation=media_file)
+                else:
+                    msg = await context.bot.send_photo(chat_id=chat_id, photo=media_file)
+            context.job_queue.run_once(
+                delete_message_job, when=ttl,
+                data={"chat_id": chat_id, "message_id": msg.message_id},
+                name=f"del_effect_{chat_id}_{msg.message_id}",
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось показать эффект {effect_key}: {e}")
+        return
 
+    # --- Обычные эффекты (black_flash, victory, death и т.д.) ---
+    path = assets.get_effect_image(effect_key)
     if not path:
         return
     try:
@@ -858,45 +895,6 @@ async def send_inventory(user_id: int, sender):
             pretty.append(format_loot_line({"name": i["item_name"], "rarity": i["rarity"]}, i["quantity"]))
     await sender("🎒 <b>Инвентарь</b>\n\n" + "\n".join(pretty),
                  reply_markup=inventory_keyboard(user_id))
-
-
-# ---------------------- ВРЕМЕННЫЙ сборщик file_id ----------------------
-# После того как соберёшь все file_id — этот блок можно удалить (и удалить
-# его регистрацию в main()).
-
-async def capture_file_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Принимает фото/гифки/видео и отвечает их file_id.
-    Отправляй боту файл с подписью — подпись станет 'названием'."""
-    msg = update.message
-    if not msg:
-        return
-
-    file_id = None
-    kind = None
-
-    if msg.animation:
-        file_id = msg.animation.file_id
-        kind = "animation"
-    elif msg.photo:
-        file_id = msg.photo[-1].file_id
-        kind = "photo"
-    elif msg.video:
-        file_id = msg.video.file_id
-        kind = "video"
-    elif msg.document:
-        file_id = msg.document.file_id
-        kind = "document"
-
-    if not file_id:
-        return
-
-    caption = msg.caption or "(без подписи)"
-    await msg.reply_text(
-        f"📎 <b>file_id</b> (type: {kind})\n"
-        f"<b>Название:</b> {caption}\n\n"
-        f"<code>{file_id}</code>",
-        parse_mode="HTML",
-    )
 
 
 # ---------------------- Текстовые ответы на головоломки ----------------------
@@ -1990,15 +1988,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("inventory", inventory_command))
-
-    # ВРЕМЕННЫЙ обработчик для сбора file_id (фото/гифки/видео).
-    # Удалить, когда все file_id будут собраны.
-    app.add_handler(MessageHandler(
-        (filters.PHOTO | filters.ANIMATION | filters.VIDEO | filters.Document.ALL)
-        & ~filters.COMMAND,
-        capture_file_id,
-    ))
-
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 

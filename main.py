@@ -449,7 +449,17 @@ def raid_lobby_keyboard(raid_id: int, user_id: int, bot_username: str | None) ->
 def raid_battle_keyboard(raid_id: int, user_id: int) -> InlineKeyboardMarkup:
     rows = []
     if raid.is_player_turn(raid_id, user_id):
-        rows.append([InlineKeyboardButton("⚔️ Атаковать", callback_data=f"raid_attack:{raid_id}")])
+        rows.append([InlineKeyboardButton(
+            "⚔️ Обычная атака",
+            callback_data=f"raid_attack:{raid_id}",
+        )])
+        for name in gacha.get_equipped(user_id):
+            t = gacha.get_technique(name)
+            if t:
+                rows.append([InlineKeyboardButton(
+                    f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
+                    callback_data=f"raid_attack:{raid_id}:{name}",
+                )])
     rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
     return InlineKeyboardMarkup(rows)
 
@@ -1025,14 +1035,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("raid_attack:"):
+        parts = data.split(":", 2)
         try:
-            rid = int(data.split(":", 1)[1])
-        except ValueError:
+            rid = int(parts[1])
+        except (ValueError, IndexError):
             rid = None
         if not rid:
             await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
             return
-        res = raid.player_attack(rid, user_id)
+        tech_name = parts[2] if len(parts) > 2 else None
+        res = raid.player_attack(rid, user_id, tech_name)
         if not res.get("ok"):
             await render(query, context,
                          "❌ " + res.get("msg", "Не удалось атаковать."),
@@ -1332,7 +1344,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          "✅ Головоломка уже решена.\n\n" + story.format_story_screen(user_id),
                          story_temp_keyboard(user_id))
             return
-        _, pid, _puzzle = found
+        _, pid, puzzle = found
+        if puzzle["type"] == "sequence":
+            story.start_sequence_puzzle(user_id, pid)
         text = story.format_puzzle_prompt(user_id) or "🧩 Головоломка"
         await render(query, context, text, puzzle_keyboard(pid))
 
@@ -1365,13 +1379,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if action == "start":
             if puzzle["type"] == "sequence":
-                seq = story.start_sequence_puzzle(user_id, pid)
-                seq_str = "  ".join(seq)
-                text = (
-                    "🧩 <b>Запомни порядок печатей:</b>\n\n"
-                    f"{seq_str}\n\n"
-                    "Теперь повтори его кнопками ниже."
-                )
+                story.start_sequence_puzzle(user_id, pid)
+                text = story.format_puzzle_prompt(user_id) or "🧩 Головоломка"
                 await render(query, context, text, puzzle_keyboard(pid))
             elif puzzle["type"] == "reaction":
                 story.start_reaction_puzzle(user_id, pid)
@@ -1390,15 +1399,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sym = parts[3]
             res = story.check_sequence_tap(user_id, pid, sym)
             r = res["result"]
+            total = len(puzzle["sequence"])
             if r == "wrong":
-                text = "❌ Неправильно. Порядок сброшен — попробуй снова."
+                bar = " ".join("⬜" for _ in range(total))
+                text = (f"❌ <b>Не та печать!</b> Все гаснут.\n\n"
+                        f"<b>Прогресс:</b> {bar}\n"
+                        f"<b>Угадано:</b> 0 из {total}\n\n"
+                        "Попробуй снова. Печати те же, порядок тот же.")
                 await render(query, context, text, puzzle_keyboard(pid))
             elif r == "correct":
-                text = (f"✅ Верно! Продолжай (позиция {res['position']}).\n\n"
-                        "Жми следующий символ в правильном порядке.")
+                pos = res["position"]
+                bar = story.format_sequence_progress(pid, pos)
+                text = (f"✅ <b>Верно!</b>\n\n"
+                        f"<b>Прогресс:</b> {bar}\n"
+                        f"<b>Угадано:</b> {pos} из {total}")
                 await render(query, context, text, puzzle_keyboard(pid))
             elif r == "complete":
-                text = ("🎉 <b>Головоломка решена!</b>\n\n"
+                text = ("🎉 <b>Все печати зажжены!</b>\n\n"
                         + story.format_story_screen(user_id))
                 await render(query, context, text, story_temp_keyboard(user_id))
             return

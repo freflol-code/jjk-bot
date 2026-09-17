@@ -2,6 +2,7 @@
 Магическая Битва: Токио — RPG-бот для Telegram по мотивам Jujutsu Kaisen.
 """
 import logging
+import time
 
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -11,6 +12,8 @@ from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 
@@ -28,6 +31,7 @@ import rest
 import equipment
 import leaderboard
 import story
+import raid
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -70,6 +74,42 @@ def format_active_buffs(user_id: int) -> str:
     return " | ".join(parts)
 
 
+# ---------------------- Хелперы сюжета и головоломок ----------------------
+
+def _get_current_step_info(user_id: int):
+    chapter = story.get_current_chapter(user_id)
+    if not chapter:
+        return None
+    prog = story.get_progress(user_id)
+    for i, step in enumerate(chapter["steps"]):
+        if prog.get(str(i), 0) >= step["goal"]:
+            continue
+        return i, step
+    return None
+
+
+def puzzle_keyboard(puzzle_id: str) -> InlineKeyboardMarkup:
+    puzzle = story.get_puzzle(puzzle_id)
+    if not puzzle:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data="story_temp_back")],
+        ])
+    rows = []
+    ptype = puzzle["type"]
+    if ptype == "sequence":
+        for label, cb in story.format_sequence_keyboard(puzzle_id):
+            rows.append([InlineKeyboardButton(label, callback_data=cb)])
+    elif ptype == "reaction":
+        rows.append([InlineKeyboardButton(
+            "▶️ Начать", callback_data=f"story_puzzle:{puzzle_id}:start",
+        )])
+        rows.append([InlineKeyboardButton(
+            "🛑 Тормоз", callback_data=f"story_puzzle:{puzzle_id}:brake",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="story_temp_back")])
+    return InlineKeyboardMarkup(rows)
+
+
 # ---------------------- Клавиатуры ----------------------
 
 def main_keyboard(user_id: int):
@@ -87,10 +127,13 @@ def main_keyboard(user_id: int):
                     f"{t['emoji']} {name} ({t['ce_cost']}🔵)", callback_data=f"tech:{name}",
                 )])
         rows.append([
+            InlineKeyboardButton("🛡 Защита", callback_data="defend"),
             InlineKeyboardButton("🏃 Сбежать", callback_data="flee"),
-            InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory"),
         ])
-        rows.append([InlineKeyboardButton("🗺 Карта", callback_data="map")])
+        rows.append([
+            InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory"),
+            InlineKeyboardButton("🗺 Карта", callback_data="map"),
+        ])
         return InlineKeyboardMarkup(rows)
 
     left_district = get_neighbor_district(player["x"], "left")
@@ -130,6 +173,13 @@ def main_keyboard(user_id: int):
         InlineKeyboardButton("👤 Профиль", callback_data="profile_menu"),
         InlineKeyboardButton("🗺 Карта", callback_data="map"),
     ])
+
+    active_raid = raid.get_active_raid_for_user(user_id)
+    if active_raid:
+        rows.append([InlineKeyboardButton("👺 Вернуться в рейд", callback_data="raid_show")])
+    elif raid.can_use_fingers(user_id):
+        rows.append([InlineKeyboardButton("👺 Рейд на Сукуну", callback_data="raid_menu")])
+
     return InlineKeyboardMarkup(rows)
 
 
@@ -335,22 +385,17 @@ def story_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 def story_temp_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    chapter = story.get_current_chapter(user_id)
     rows = []
-    if chapter:
-        prog = story.get_progress(user_id)
-        first_step_done = False
-        for i, step in enumerate(chapter["steps"]):
-            if step["type"] == "kill":
-                first_step_done = prog.get(str(i), 0) >= step["goal"]
-                break
-        boss_pending = any(
-            step["type"] == "kill_boss" and prog.get(str(i), 0) < step["goal"]
-            for i, step in enumerate(chapter["steps"])
-        )
-        if first_step_done and boss_pending:
+    info = _get_current_step_info(user_id)
+    if info:
+        _, step = info
+        if step["type"] == "puzzle":
             rows.append([InlineKeyboardButton(
-                "👁 Войти в подвал (босс)", callback_data="story_temp_boss",
+                "🧩 Решить головоломку", callback_data="story_temp_puzzle",
+            )])
+        elif step["type"] == "kill_boss":
+            rows.append([InlineKeyboardButton(
+                "👁 Войти к боссу", callback_data="story_temp_boss",
             )])
     rows.append([InlineKeyboardButton("🩸 Патрулирование", callback_data="story_temp_patrol")])
     rows.append([InlineKeyboardButton("⬅️ Вернуться в школу", callback_data="story_exit_temp")])
@@ -365,6 +410,53 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("🏆 Таблица лидеров", callback_data="profile_leaderboard")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")],
+    ])
+
+
+# ---------- Клавиатуры РЕЙДА ----------
+
+def raid_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    available = raid.get_available_fingers(user_id)
+    rows = []
+    for n in range(1, min(3, available) + 1):
+        rows.append([InlineKeyboardButton(
+            f"👺 Создать рейд на {n} 🩸",
+            callback_data=f"raid_create:{n}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
+    return InlineKeyboardMarkup(rows)
+
+
+def raid_lobby_keyboard(raid_id: int, user_id: int, bot_username: str | None) -> InlineKeyboardMarkup:
+    r = raid.get_raid(raid_id)
+    rows = []
+    if r and r["creator_id"] == user_id:
+        rows.append([InlineKeyboardButton("▶️ Начать бой", callback_data=f"raid_start:{raid_id}")])
+
+    if bot_username:
+        share_url = (
+            f"https://t.me/share/url?"
+            f"url=https://t.me/{bot_username}?start=raid_{raid_id}"
+            f"&text=Присоединяйся к рейду на Сукуну!"
+        )
+        rows.append([InlineKeyboardButton("📤 Пригласить друзей", url=share_url)])
+
+    rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
+    rows.append([InlineKeyboardButton("🚪 Выйти", callback_data=f"raid_leave:{raid_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def raid_battle_keyboard(raid_id: int, user_id: int) -> InlineKeyboardMarkup:
+    rows = []
+    if raid.is_player_turn(raid_id, user_id):
+        rows.append([InlineKeyboardButton("⚔️ Атаковать", callback_data=f"raid_attack:{raid_id}")])
+    rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
+    return InlineKeyboardMarkup(rows)
+
+
+def raid_finished_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ В меню", callback_data="back_to_game")],
     ])
 
 
@@ -546,6 +638,7 @@ def gacha_menu_text(user_id: int) -> str:
 def profile_text(user_id: int) -> str:
     player = database.get_or_create_player(user_id, "")
     need = player["level"] * config.EXP_BASE
+    max_level = story.get_max_level(user_id)
 
     rank_info = leaderboard.get_player_rank(user_id)
     rank_line = ""
@@ -561,13 +654,17 @@ def profile_text(user_id: int) -> str:
     buffs = format_active_buffs(user_id)
     buffs_line = f"\n✨ Баффы: {buffs}" if buffs else ""
 
+    cap_line = ""
+    if player["level"] >= max_level:
+        cap_line = f"\n⚠️ Достигнут потолок уровня по сюжету: <b>{max_level}</b>"
+
     learned = database.get_player_techniques(user_id)
     equipped_tech = gacha.get_equipped(user_id)
     weapons_owned = database.get_player_weapons(user_id)
 
     return (
         "👤 <b>Профиль шамана</b>\n\n"
-        f"🧬 Уровень: <b>{player['level']}</b> ({player['exp']}/{need})\n"
+        f"🧬 Уровень: <b>{player['level']}</b> ({player['exp']}/{need}) · потолок: {max_level}\n"
         f"🎚 Контроль ПЭ: <b>{player['ce_control']}</b>\n"
         f"❤️ HP: {player['hp']}/{player['max_hp']}\n"
         f"🔵 ПЭ: {player['ce']}/{player['max_ce']}\n"
@@ -577,6 +674,7 @@ def profile_text(user_id: int) -> str:
         f"⚔️ Оружия в коллекции: {len(weapons_owned)}"
         f"{rank_line}"
         f"{buffs_line}"
+        f"{cap_line}"
     )
 
 
@@ -589,11 +687,108 @@ def _quests_done_text(done: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# ---------------------- Хелперы рейда ----------------------
+
+async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str | None:
+    try:
+        name = context.bot.username
+        if name:
+            return name
+        me = await context.bot.get_me()
+        return me.username
+    except Exception:
+        return None
+
+
+async def _render_raid_screen(query, context: ContextTypes.DEFAULT_TYPE,
+                              raid_id: int, user_id: int):
+    r = raid.get_raid(raid_id)
+    if not r:
+        await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
+        return
+
+    if r["status"] == "lobby":
+        text = raid.format_lobby(raid_id)
+        bot_name = await _bot_username(context)
+        if bot_name:
+            text += (
+                f"\n\n🔗 Ссылка для друзей:\n"
+                f"<code>https://t.me/{bot_name}?start=raid_{raid_id}</code>"
+            )
+        kb = raid_lobby_keyboard(raid_id, user_id, bot_name)
+    elif r["status"] == "battle":
+        text = raid.format_battle(raid_id, user_id)
+        kb = raid_battle_keyboard(raid_id, user_id)
+    else:
+        text = raid.format_finished(raid_id)
+        kb = raid_finished_keyboard()
+    await render(query, context, text, kb)
+
+
+async def _notify_raid_players(context: ContextTypes.DEFAULT_TYPE,
+                               raid_id: int, user_ids: list[int],
+                               exclude: int | None = None):
+    r = raid.get_raid(raid_id)
+    if not r:
+        return
+    for uid in user_ids:
+        if uid == exclude:
+            continue
+        try:
+            if r["status"] == "finished":
+                text = raid.format_finished(raid_id)
+                kb = raid_finished_keyboard()
+            else:
+                text = raid.format_battle(raid_id, uid)
+                kb = raid_battle_keyboard(raid_id, uid)
+            await context.bot.send_message(
+                chat_id=uid, text=text, parse_mode="HTML", reply_markup=kb,
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить рейд-игрока {uid}: {e}")
+
+
 # ---------------------- Команды ----------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     database.get_or_create_player(user.id, user.username or user.first_name)
+
+    args = context.args or []
+    if args and args[0].startswith("raid_"):
+        try:
+            rid = int(args[0].split("_", 1)[1])
+        except (ValueError, IndexError):
+            rid = None
+        if rid:
+            res = raid.join_raid(rid, user.id)
+            if not res.get("ok"):
+                msg = res.get("msg", "Не удалось присоединиться к рейду.")
+                await update.message.reply_html(
+                    f"❌ {msg}", reply_markup=kb_for(user.id),
+                )
+                return
+
+            r = raid.get_raid(rid)
+            if not r or r["status"] not in ("lobby", "battle"):
+                await update.message.reply_html(
+                    "❌ Рейд уже завершён или недоступен.",
+                    reply_markup=kb_for(user.id),
+                )
+                return
+
+            if r["status"] == "lobby":
+                text = "✅ Ты в рейде!\n\n" + raid.format_lobby(rid)
+            else:
+                text = "✅ Ты в бою!\n\n" + raid.format_battle(rid, user.id)
+
+            bot_name = await _bot_username(context)
+            kb = (raid_lobby_keyboard(rid, user.id, bot_name)
+                  if r["status"] == "lobby"
+                  else raid_battle_keyboard(rid, user.id))
+            await update.message.reply_html(text, reply_markup=kb)
+            return
+
     text = (
         f"👋 Привет, {user.first_name}!\n\n"
         f"💬 {GOJO}: «О, новое лицо. Добро пожаловать в Токийскую школу магии. "
@@ -652,6 +847,35 @@ async def send_inventory(user_id: int, sender):
                  reply_markup=inventory_keyboard(user_id))
 
 
+# ---------------------- Текстовые ответы на головоломки ----------------------
+
+async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
+    if text.startswith("/"):
+        return
+
+    res = story.solve_current_puzzle_text(user.id, text)
+    if not res.get("active"):
+        return
+    if res.get("wrong_type"):
+        return
+
+    if res["correct"]:
+        body = "✅ <b>Верно!</b>\n\n" + story.format_story_screen(user.id)
+        await update.message.reply_html(body, reply_markup=story_temp_keyboard(user.id))
+    else:
+        body = "❌ Неверно. Попробуй ещё раз."
+        found = story.get_current_puzzle_step(user.id)
+        if found:
+            _, pid, _ = found
+            await update.message.reply_html(body, reply_markup=puzzle_keyboard(pid))
+        else:
+            await update.message.reply_html(body, reply_markup=kb_for(user.id))
+
+
 # ---------------------- Кнопки ----------------------
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -662,7 +886,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     player = database.get_or_create_player(user_id, query.from_user.username or query.from_user.first_name)
     x = player["x"]
 
-    if (-10 <= x <= 10) and not story.is_in_temp(user_id) and not database.get_encounter(user_id):
+    in_raid_now = raid.get_active_raid_for_user(user_id)
+    if (not in_raid_now
+            and -10 <= x <= 10
+            and not story.is_in_temp(user_id)
+            and not database.get_encounter(user_id)):
         event = story.check_and_finish(user_id)
         if event:
             text = story.format_completion(
@@ -674,12 +902,157 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text += "\n\n" + story.format_intro(event["next_chapter"])
             else:
                 text += "\n\n🏁 <b>Все доступные главы пройдены.</b>"
+            text += f"\n\n📈 Новый потолок уровня: <b>{event['new_max_level']}</b>"
             await render(query, context, text, kb_for(user_id),
                          image_path=district_image_for_x(x))
             return
 
     data = query.data
     done: list[dict] = []
+
+    # ================= РЕЙД =================
+
+    if data == "raid_menu":
+        if raid.get_active_raid_for_user(user_id):
+            await _render_raid_screen(query, context,
+                                      raid.get_active_raid_for_user(user_id)["id"], user_id)
+            return
+        available = raid.get_available_fingers(user_id)
+        cd = raid.get_cooldown_until(user_id)
+        if cd:
+            left = cd - int(time.time())
+            text = (
+                "👺 <b>Рейд на Сукуну</b>\n\n"
+                f"⏳ Твои пальцы в КД ещё <b>{raid.format_cooldown(left)}</b>.\n"
+                "<i>Пальцы Сукуны добываются в сюжетных главах.</i>"
+            )
+            await render(query, context, text, kb_for(user_id))
+            return
+        if available == 0:
+            text = (
+                "👺 <b>Рейд на Сукуну</b>\n\n"
+                "У тебя нет 🩸 Пальцев Сукуны.\n"
+                "<i>Пальцы дропают сюжетные боссы (см. «📖 Сюжет»).</i>"
+            )
+            await render(query, context, text, kb_for(user_id))
+            return
+        text = (
+            "👺 <b>Рейд на Сукуну</b>\n\n"
+            f"🩸 Доступно пальцев: <b>{available}</b>\n"
+            "Чем больше пальцев — тем сильнее Сукуна и жирнее награда.\n\n"
+            "Создай рейд, позови друзей по ссылке (до 5 игроков) и дерись.\n"
+            "⚠️ <i>У каждого участника должно быть не меньше пальцев, чем "
+            "в рейде.</i>\n\n"
+            "<i>Годжо: «Веселитесь, только не помрите все сразу.»</i>"
+        )
+        await render(query, context, text, raid_menu_keyboard(user_id))
+        return
+
+    if data.startswith("raid_create:"):
+        try:
+            n = int(data.split(":", 1)[1])
+        except ValueError:
+            n = 0
+        res = raid.create_raid(user_id, n)
+        if not res["ok"]:
+            await render(query, context, "❌ " + res["msg"], kb_for(user_id))
+            return
+        await _render_raid_screen(query, context, res["raid_id"], user_id)
+        return
+
+    if data == "raid_show":
+        r = raid.get_active_raid_for_user(user_id)
+        if not r:
+            await render(query, context,
+                         "ℹ️ У тебя нет активного рейда.",
+                         kb_for(user_id))
+            return
+        await _render_raid_screen(query, context, r["id"], user_id)
+        return
+
+    if data.startswith("raid_show:"):
+        try:
+            rid = int(data.split(":", 1)[1])
+        except ValueError:
+            rid = None
+        if not rid:
+            await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
+            return
+        await _render_raid_screen(query, context, rid, user_id)
+        return
+
+    if data.startswith("raid_start:"):
+        try:
+            rid = int(data.split(":", 1)[1])
+        except ValueError:
+            rid = None
+        if not rid:
+            await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
+            return
+        res = raid.start_battle(rid, user_id)
+        if not res["ok"]:
+            await render(query, context, "❌ " + res["msg"], kb_for(user_id))
+            return
+        await _render_raid_screen(query, context, rid, user_id)
+        parts = raid.get_participants(rid)
+        await _notify_raid_players(
+            context, rid,
+            [p["user_id"] for p in parts],
+            exclude=user_id,
+        )
+        return
+
+    if data.startswith("raid_leave:"):
+        try:
+            rid = int(data.split(":", 1)[1])
+        except ValueError:
+            rid = None
+        if not rid:
+            await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
+            return
+        res = raid.leave_raid(rid, user_id)
+        if res.get("disband"):
+            text = "🚪 Ты вышел. Рейд распущен."
+        else:
+            text = "🚪 " + res.get("msg", "Ты вышел из рейда.")
+        await render(query, context, text, kb_for(user_id))
+        r = raid.get_raid(rid)
+        if r and r["status"] in ("lobby", "battle"):
+            await _notify_raid_players(
+                context, rid,
+                [p["user_id"] for p in raid.get_participants(rid)],
+                exclude=user_id,
+            )
+        return
+
+    if data.startswith("raid_attack:"):
+        try:
+            rid = int(data.split(":", 1)[1])
+        except ValueError:
+            rid = None
+        if not rid:
+            await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
+            return
+        res = raid.player_attack(rid, user_id)
+        if not res.get("ok"):
+            await render(query, context,
+                         "❌ " + res.get("msg", "Не удалось атаковать."),
+                         kb_for(user_id))
+            return
+
+        r = raid.get_raid(rid)
+        if r and r["status"] == "finished":
+            text = raid.format_finished(rid)
+            await render(query, context, text, raid_finished_keyboard())
+        else:
+            text = raid.format_battle(rid, user_id)
+            await render(query, context, text, raid_battle_keyboard(rid, user_id))
+
+        notify_ids = res.get("notify") or []
+        await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
+        return
+
+    # ================= ОБЫЧНЫЕ ДЕЙСТВИЯ =================
 
     # ---------- Движение ----------
     if data in ("move_left", "move_right"):
@@ -769,9 +1142,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
     # ---------- Бой ----------
-    elif data in ("attack", "flee") or data.startswith("tech:"):
+    elif data in ("attack", "defend", "flee") or data.startswith("tech:"):
         if data == "attack":
             result = combat.attack(user_id)
+        elif data == "defend":
+            result = combat.defend(user_id)
         elif data == "flee":
             result = combat.flee(user_id)
         else:
@@ -906,7 +1281,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             f"{temp['emoji']} <b>{temp['name']}</b>\n"
             f"<i>{temp['description']}</i>\n\n"
-            "🩸 Патрулируй или зайди в подвал, если готов."
+            "🩸 Патрулируй или продолжай по сюжету."
         )
         await render(query, context, text, story_temp_keyboard(user_id))
 
@@ -921,6 +1296,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             if event["next_chapter"]:
                 text += "\n\n" + story.format_intro(event["next_chapter"])
+            else:
+                text += "\n\n🏁 <b>Все доступные главы пройдены.</b>"
+            text += f"\n\n📈 Новый потолок уровня: <b>{event['new_max_level']}</b>"
             await render(query, context, text, kb_for(user_id),
                          image_path=district_image_for_x(x))
             return
@@ -948,6 +1326,102 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
 
+    elif data == "story_temp_puzzle":
+        found = story.get_current_puzzle_step(user_id)
+        if not found:
+            await render(query, context,
+                         "✅ Головоломка уже решена.\n\n" + story.format_story_screen(user_id),
+                         story_temp_keyboard(user_id))
+            return
+        _, pid, _puzzle = found
+        text = story.format_puzzle_prompt(user_id) or "🧩 Головоломка"
+        await render(query, context, text, puzzle_keyboard(pid))
+
+    elif data == "story_temp_back":
+        if story.is_in_temp(user_id):
+            temp = story.get_temp_district(user_id)
+            if temp:
+                text = (f"{temp['emoji']} <b>{temp['name']}</b>\n"
+                        f"<i>{temp['description']}</i>\n\n"
+                        "🩸 Патрулируй или продолжай по сюжету.")
+            else:
+                text = "📖 Сюжет"
+            await render(query, context, text, story_temp_keyboard(user_id))
+        else:
+            text = location_text(user_id, x)
+            await render(query, context, text, kb_for(user_id),
+                         image_path=district_image_for_x(x))
+
+    elif data.startswith("story_puzzle:"):
+        parts = data.split(":", 3)
+        if len(parts) < 3:
+            return
+        pid = parts[1]
+        action = parts[2]
+        puzzle = story.get_puzzle(pid)
+        if not puzzle:
+            await render(query, context, "❌ Головоломка не найдена.",
+                         story_temp_keyboard(user_id))
+            return
+
+        if action == "start":
+            if puzzle["type"] == "sequence":
+                seq = story.start_sequence_puzzle(user_id, pid)
+                seq_str = "  ".join(seq)
+                text = (
+                    "🧩 <b>Запомни порядок печатей:</b>\n\n"
+                    f"{seq_str}\n\n"
+                    "Теперь повтори его кнопками ниже."
+                )
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif puzzle["type"] == "reaction":
+                story.start_reaction_puzzle(user_id, pid)
+                text = ("🧩 <b>Приготовься…</b>\n\n"
+                        "Как только почувствуешь момент — жми «🛑 Тормоз»!")
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🛑 Тормоз",
+                                          callback_data=f"story_puzzle:{pid}:brake")],
+                ])
+                await render(query, context, text, kb)
+            return
+
+        if action == "tap":
+            if len(parts) < 4:
+                return
+            sym = parts[3]
+            res = story.check_sequence_tap(user_id, pid, sym)
+            r = res["result"]
+            if r == "wrong":
+                text = "❌ Неправильно. Порядок сброшен — попробуй снова."
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif r == "correct":
+                text = (f"✅ Верно! Продолжай (позиция {res['position']}).\n\n"
+                        "Жми следующий символ в правильном порядке.")
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif r == "complete":
+                text = ("🎉 <b>Головоломка решена!</b>\n\n"
+                        + story.format_story_screen(user_id))
+                await render(query, context, text, story_temp_keyboard(user_id))
+            return
+
+        if action == "brake":
+            res = story.check_reaction_tap(user_id, pid)
+            r = res["result"]
+            if r == "not_started":
+                text = "❌ Сначала нажми «▶️ Начать»."
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif r == "too_early":
+                text = "❌ Слишком рано! Попробуй ещё раз."
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif r == "too_late":
+                text = "❌ Слишком поздно! Попробуй ещё раз."
+                await render(query, context, text, puzzle_keyboard(pid))
+            elif r == "success":
+                text = ("🎉 <b>Головоломка решена!</b>\n\n"
+                        + story.format_story_screen(user_id))
+                await render(query, context, text, story_temp_keyboard(user_id))
+            return
+
     elif data == "story_temp_boss":
         chapter = story.get_current_chapter(user_id)
         temp = story.get_temp_district(user_id)
@@ -955,6 +1429,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "❌ Сейчас нечего делать."
             await render(query, context, text, story_temp_keyboard(user_id))
             return
+
+        puzzle_found = story.get_current_puzzle_step(user_id)
+        if puzzle_found:
+            _, pid, _ = puzzle_found
+            text = ("🔒 Сначала разгадай головоломку — вход закрыт.\n\n"
+                    + (story.format_puzzle_prompt(user_id) or ""))
+            await render(query, context, text, puzzle_keyboard(pid))
+            return
+
         boss = temp["boss"]
         monster = {
             "name": boss["name"],
@@ -969,7 +1452,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         database.set_encounter(user_id, temp["id"], monster)
         encounter = database.get_encounter(user_id)
-        text = ("👁 <b>Хранитель Пальца пробудился!</b>\n\n"
+        text = ("👁 <b>Хранитель пробудился!</b>\n\n"
                 + combat.encounter_status_text(encounter) + "\n\n"
                 + combat.player_status_text(player))
         image_path = assets.get_monster_image(encounter["monster_name"])
@@ -1337,6 +1820,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
             return
 
+        r = raid.get_active_raid_for_user(user_id)
+        if r:
+            await _render_raid_screen(query, context, r["id"], user_id)
+            return
+
         encounter = database.get_encounter(user_id)
         if encounter:
             fresh_player = database.get_or_create_player(user_id, "")
@@ -1404,9 +1892,6 @@ async def clear_buffs_job(context: ContextTypes.DEFAULT_TYPE):
 # ---------------------- Миграции ----------------------
 
 def migrate_curse_seals():
-    """Одноразовая миграция: печати должны иметь rarity='призыв'.
-    Раньше они дропались с rarity='эпический' из-за CLASS_TO_DROP_RARITY,
-    и у игроков не появлялась кнопка «Призвать». Исправляем уже выданные."""
     conn = database.get_conn()
     cur = conn.cursor()
     total = 0
@@ -1424,12 +1909,21 @@ def migrate_curse_seals():
 # ---------------------- Точка входа ----------------------
 
 def main():
-    # Health-сервер для Back4App / Render (иначе деплой падает — они ждут TCP-порт)
     from health import start_health_server
     start_health_server()
 
     database.init_db()
     rest._ensure_column()
+
+    try:
+        raid._ensure_tables()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицы рейда: {e}")
+    try:
+        story._ensure_table()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицу сюжета: {e}")
+
     migrate_curse_seals()
 
     app = Application.builder().token(config.BOT_TOKEN).build()
@@ -1438,6 +1932,7 @@ def main():
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("inventory", inventory_command))
     app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     app.job_queue.run_repeating(
         spawn_job,

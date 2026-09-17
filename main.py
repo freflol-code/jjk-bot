@@ -192,7 +192,6 @@ def inventory_keyboard(user_id: int):
     items = database.get_inventory(user_id)
     rows = []
     for i in items:
-        # Печати = rarity "призыв" ЛИБО имя в SUMMON_RECIPES (защита от старых записей)
         is_seal = i["rarity"] == "призыв" or i["item_name"] in bosses.SUMMON_RECIPES
         if i["rarity"] == "расходник":
             rows.append([InlineKeyboardButton(
@@ -1425,6 +1424,10 @@ def migrate_curse_seals():
 # ---------------------- Точка входа ----------------------
 
 def main():
+    # Health-сервер для Back4App / Render (иначе деплой падает — они ждут TCP-порт)
+    from health import start_health_server
+    start_health_server()
+
     database.init_db()
     rest._ensure_column()
     migrate_curse_seals()

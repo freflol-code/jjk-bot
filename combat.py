@@ -1,29 +1,13 @@
 """
 Пошаговая боевая система «Магическая Битва: Токио».
 
-Ход игрока (обычная атака ИЛИ врождённая техника) -> ход проклятия.
+Ход игрока (обычная атака / врождённая техника / защита) -> ход проклятия.
 Всё завязано на стате "Контроль ПЭ".
 
-С учётом оружия (equipment.py):
-  - dmg_bonus_min/max прибавляются к физ. урону;
-  - tech_power умножает урон врождённых техник;
-  - crit_bonus повышает шанс Чёрной Вспышки.
-
-С учётом активных баффов (реальное время, database.get_active_buffs):
-  - dmg_bonus          — множитель физ. урона и урона техник;
-  - defense_bonus      — плюс к защите (капается DEFENSE_CAP);
-  - ce_regen_bonus     — множитель регена ПЭ;
-  - crit_bonus         — плюс к шансу Чёрной Вспышки;
-  - exp_bonus/gold_bonus — множители наград в _victory.
-
-Крит оформлен как Чёрная Вспышка (Black Flash): двойной урон плюс шанс стана.
-
-Награды за обычных проклятий умножаются на CLASS_REWARD_MULT в зависимости
-от класса: 4-й ×1.0, 3-й ×1.3, 2-й ×1.7, 1-й ×2.5. У боссов Особого класса
-награды фиксированные (не применяется множитель).
-
-Печати (ритуальные предметы) дропаются с rarity="призыв" — это позволяет
-показывать кнопку «⚡ Призвать» в инвентаре и блокирует продажу Хакари.
+Защита (defend):
+  - игрок пропускает свою атаку;
+  - проклятие бьёт по нему с половинным уроном (x0.5);
+  - игрок получает удвоенный реген ПЭ за этот ход.
 """
 import random
 
@@ -51,6 +35,9 @@ CLASS_REWARD_MULT = {
     "2-й класс": 1.7,
     "1-й класс": 2.5,
 }
+
+DEFEND_DAMAGE_MULT = 0.5     # входящий урон во время защиты
+DEFEND_CE_REGEN_MULT = 2.0   # множитель регена ПЭ во время защиты
 
 
 # ---------------- Формулы от "Контроля ПЭ" ----------------
@@ -98,10 +85,11 @@ def _black_flash_chance(user_id: int) -> float:
     return min(0.5, PLAYER_CRIT_CHANCE + w["crit_bonus"] + buff)
 
 
-def _regen_ce(user_id: int, player):
-    regen = _ce_regen_amount(user_id, player)
+def _regen_ce(user_id: int, player, mult: float = 1.0):
+    regen = int(_ce_regen_amount(user_id, player) * mult)
     new_ce = min(player["max_ce"], player["ce"] + regen)
     database.update_player_ce(user_id, new_ce)
+    return regen
 
 
 # ---------------- Тексты ----------------
@@ -148,8 +136,6 @@ def _roll_drop(user_id: int, encounter):
     if random.random() > DROP_CHANCE:
         return None
 
-    # Печати (ритуальные) — особый тип предметов с rarity="призыв",
-    # чтобы в инвентаре появлялась кнопка «⚡ Призвать» и их нельзя было продать.
     if item_name in SUMMON_RECIPES:
         rarity = "призыв"
         qty = 1
@@ -185,8 +171,6 @@ def _apply_effect(user_id: int, encounter, effect: dict, log: list):
 # ---------------- Победа и смерть ----------------
 
 def _story_tracking(user_id: int, encounter, log: list):
-    """Сюжетный трекинг: считаем обычные убийства и убийства боссов,
-    а также выдаём гарантированный дроп с сюжетного босса."""
     in_temp = story.is_in_temp(user_id)
     temp = story.get_temp_district(user_id) if in_temp else None
 
@@ -207,7 +191,6 @@ def _story_tracking(user_id: int, encounter, log: list):
 
 
 def _find_story_boss(user_id: int, monster_name: str) -> dict | None:
-    """Если монстр — сюжетный босс из temp-локации, вернёт его dict."""
     temp = story.get_temp_district(user_id)
     if not temp:
         return None
@@ -225,7 +208,6 @@ def _victory(user_id: int, encounter, log: list) -> dict:
     gold_buff = database.get_buff_value(user_id, "gold_bonus")
     exp_buff = database.get_buff_value(user_id, "exp_bonus")
 
-    # --- Босс Особого класса (обычный или сюжетный) ---
     if boss or story_boss:
         source = boss or story_boss
         gold = source["reward_gold"]
@@ -259,7 +241,6 @@ def _victory(user_id: int, encounter, log: list) -> dict:
             log.append(f"\n🎉 <b>Уровень повышен до {new_level}!</b> HP и ПЭ восстановлены.")
         return {"status": "victory", "log": log, "effect": "boss_victory"}
 
-    # --- Обычное проклятие ---
     curse_class = encounter["curse_class"] or "4-й класс"
     class_mult = CLASS_REWARD_MULT.get(curse_class, 1.0)
 
@@ -298,9 +279,6 @@ def _death(user_id: int, player, log: list) -> dict:
     database.update_player_hp(user_id, respawn_hp)
     database.clear_encounter(user_id)
     database.update_player_x(user_id, 0)
-
-    # Если игрок погиб в сюжетной temp-локации — выкидываем его оттуда,
-    # иначе он застрянет: будет в школе, но с флагом in_temp=True.
     story.exit_temp(user_id)
 
     lost = min(player["gold"], max(1, int(player["gold"] * DEATH_GOLD_LOSS)))
@@ -311,7 +289,10 @@ def _death(user_id: int, player, log: list) -> dict:
     return {"status": "death", "log": log, "effect": "death"}
 
 
-def _curse_turn(user_id: int, player, encounter, log: list) -> dict | None:
+def _curse_turn(user_id: int, player, encounter, log: list,
+                damage_mult: float = 1.0) -> dict | None:
+    """Ход проклятия. damage_mult — множитель входящего урона
+    (0.5 во время защиты игрока)."""
     hp = encounter["hp"]
 
     if encounter["bleed_turns"] > 0:
@@ -333,15 +314,22 @@ def _curse_turn(user_id: int, player, encounter, log: list) -> dict | None:
     else:
         raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
         reduction = _defense_reduction(user_id, player)
-        mdmg = max(1, int(raw * (1 - reduction)))
+        mdmg = max(1, int(raw * (1 - reduction) * damage_mult))
         new_hp = player["hp"] - mdmg
         if new_hp <= 0:
             return _death(user_id, player, log)
         database.update_player_hp(user_id, new_hp)
-        log.append(f"👹 {encounter['monster_name']} нанёс {mdmg} урона (защита -{int(reduction*100)}%).")
+        if damage_mult < 1.0:
+            log.append(f"🛡 {encounter['monster_name']} нанёс {mdmg} урона "
+                       f"(защита -{int(reduction*100)}%, блок x{damage_mult}).")
+        else:
+            log.append(f"👹 {encounter['monster_name']} нанёс {mdmg} урона "
+                       f"(защита -{int(reduction*100)}%).")
 
     return None
 
+
+# ---------------- Атака игрока ----------------
 
 def attack(user_id: int, technique_name: str | None = None) -> dict:
     encounter = database.get_encounter(user_id)
@@ -424,6 +412,37 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
 
     return {"status": "ongoing", "log": log, "effect": effect_key}
 
+
+# ---------------- Защита ----------------
+
+def defend(user_id: int) -> dict:
+    """Игрок встаёт в защиту: пропускает атаку, но получает половинный урон
+    от проклятия и удвоенный реген ПЭ."""
+    encounter = database.get_encounter(user_id)
+    if not encounter:
+        return {"status": "no_encounter", "log": []}
+
+    player = database.get_or_create_player(user_id, "")
+    log = ["🛡 <b>Ты встал в защиту.</b> Пропускаешь атаку, но получаешь меньше урона."]
+
+    death_result = _curse_turn(user_id, player, encounter, log,
+                               damage_mult=DEFEND_DAMAGE_MULT)
+    if death_result:
+        return death_result
+
+    encounter = database.get_encounter(user_id)
+    if encounter and encounter["hp"] <= 0:
+        return _victory(user_id, encounter, log)
+
+    # Удвоенный реген ПЭ
+    fresh_player = database.get_or_create_player(user_id, "")
+    regen = _regen_ce(user_id, fresh_player, mult=DEFEND_CE_REGEN_MULT)
+    log.append(f"💠 Восстановлено {regen} ПЭ (x{DEFEND_CE_REGEN_MULT:.0f} за защиту).")
+
+    return {"status": "ongoing", "log": log, "effect": "defend"}
+
+
+# ---------------- Побег ----------------
 
 def flee(user_id: int) -> dict:
     encounter = database.get_encounter(user_id)

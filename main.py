@@ -59,8 +59,6 @@ BUFF_LABELS = {
     "curse_hunt_2": "🧭 +{}% шанс 2-го кл.",
 }
 
-# Короткие коды редкостей для callback_data: Telegram не принимает
-# callback_data длиннее 64 байт, а кириллица в UTF-8 = 2 байта/символ.
 RARITY_SHORT = {
     "Обычная": "com",
     "Редкая": "rar",
@@ -97,6 +95,11 @@ def _get_current_step_info(user_id: int):
     return None
 
 
+def _get_symbols(puzzle: dict) -> list:
+    """Символы для sequence-головоломки в фиксированном порядке."""
+    return puzzle.get("symbols") or list(dict.fromkeys(puzzle["sequence"]))
+
+
 def puzzle_keyboard(puzzle_id: str) -> InlineKeyboardMarkup:
     puzzle = story.get_puzzle(puzzle_id)
     if not puzzle:
@@ -106,8 +109,12 @@ def puzzle_keyboard(puzzle_id: str) -> InlineKeyboardMarkup:
     rows = []
     ptype = puzzle["type"]
     if ptype == "sequence":
-        for label, cb in story.format_sequence_keyboard(puzzle_id):
-            rows.append([InlineKeyboardButton(label, callback_data=cb)])
+        symbols = _get_symbols(puzzle)
+        for i, sym in enumerate(symbols):
+            rows.append([InlineKeyboardButton(
+                sym,
+                callback_data=f"story_puzzle:{puzzle_id}:tap:{i}",
+            )])
     elif ptype == "reaction":
         rows.append([InlineKeyboardButton(
             "▶️ Начать", callback_data=f"story_puzzle:{puzzle_id}:start",
@@ -127,11 +134,13 @@ def main_keyboard(user_id: int):
 
     if in_combat:
         rows = [[InlineKeyboardButton("⚔️ Обычная атака", callback_data="attack")]]
-        for name in gacha.get_equipped(user_id):
+        equipped = gacha.get_equipped(user_id)
+        for i, name in enumerate(equipped):
             t = gacha.get_technique(name)
             if t:
                 rows.append([InlineKeyboardButton(
-                    f"{t['emoji']} {name} ({t['ce_cost']}🔵)", callback_data=f"tech:{name}",
+                    f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
+                    callback_data=f"tech:{i}",
                 )])
         rows.append([
             InlineKeyboardButton("🛡 Защита", callback_data="defend"),
@@ -223,8 +232,6 @@ def gacha_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def gacha_list_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Меню редкостей вместо полного списка. У игрока может быть 50+ техник,
-    а Telegram ругается на длинные callback_data и большие клавиатуры."""
     learned = database.get_player_techniques(user_id)
     counts = {}
     for row in learned:
@@ -248,14 +255,11 @@ def gacha_list_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 def gacha_rarity_keyboard(user_id: int, short: str) -> InlineKeyboardMarkup:
-    """Техники одной редкости. Callback содержит короткий индекс, а не имя
-    техники (кириллические имена не влезают в лимит 64 байта callback_data)."""
     rarity = RARITY_FROM_SHORT.get(short)
     if not rarity:
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_list")],
         ])
-
     learned = database.get_player_techniques(user_id)
     techs = []
     for row in learned:
@@ -284,19 +288,21 @@ def gacha_rarity_keyboard(user_id: int, short: str) -> InlineKeyboardMarkup:
 
 
 def inventory_keyboard(user_id: int):
+    """Callback_data — индекс элемента в inventory (только число), не имя.
+    Имя содержит кириллицу и эмодзи, что Telegram в callback_data не принимает."""
     items = database.get_inventory(user_id)
     rows = []
-    for i in items:
-        is_seal = i["rarity"] == "призыв" or i["item_name"] in bosses.SUMMON_RECIPES
-        if i["rarity"] == "расходник":
+    for i, item in enumerate(items):
+        is_seal = item["rarity"] == "призыв" or item["item_name"] in bosses.SUMMON_RECIPES
+        if item["rarity"] == "расходник":
             rows.append([InlineKeyboardButton(
-                f"🧪 Использовать: {i['item_name']} x{i['quantity']}",
-                callback_data=f"use_item:{i['item_name']}",
+                f"🧪 Использовать: {item['item_name']} x{item['quantity']}",
+                callback_data=f"use_item:{i}",
             )])
         elif is_seal:
             rows.append([InlineKeyboardButton(
-                f"⚡ Призвать: {i['item_name']} x{i['quantity']}",
-                callback_data=f"summon_item:{i['item_name']}",
+                f"⚡ Призвать: {item['item_name']} x{item['quantity']}",
+                callback_data=f"summon_item:{i}",
             )])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
     return InlineKeyboardMarkup(rows)
@@ -496,12 +502,13 @@ def raid_battle_keyboard(raid_id: int, user_id: int) -> InlineKeyboardMarkup:
             "⚔️ Обычная атака",
             callback_data=f"raid_attack:{raid_id}",
         )])
-        for name in gacha.get_equipped(user_id):
+        equipped = gacha.get_equipped(user_id)
+        for i, name in enumerate(equipped):
             t = gacha.get_technique(name)
             if t:
                 rows.append([InlineKeyboardButton(
                     f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
-                    callback_data=f"raid_attack:{raid_id}:{name}",
+                    callback_data=f"raid_attack:{raid_id}:t:{i}",
                 )])
     rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
     return InlineKeyboardMarkup(rows)
@@ -951,8 +958,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     done: list[dict] = []
 
-    # ================= РЕЙД =================
-
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
             await _render_raid_screen(query, context,
@@ -1067,7 +1072,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("raid_attack:"):
-        parts = data.split(":", 2)
+        parts = data.split(":")
         try:
             rid = int(parts[1])
         except (ValueError, IndexError):
@@ -1075,7 +1080,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not rid:
             await render(query, context, "❌ Рейд не найден.", kb_for(user_id))
             return
-        tech_name = parts[2] if len(parts) > 2 else None
+
+        tech_name = None
+        if len(parts) >= 4 and parts[2] == "t":
+            try:
+                slot = int(parts[3])
+            except ValueError:
+                slot = -1
+            equipped = gacha.get_equipped(user_id)
+            if 0 <= slot < len(equipped):
+                tech_name = equipped[slot]
+
         res = raid.player_attack(rid, user_id, tech_name)
         if not res.get("ok"):
             await render(query, context,
@@ -1094,8 +1109,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notify_ids = res.get("notify") or []
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
-
-    # ================= ОБЫЧНЫЕ ДЕЙСТВИЯ =================
 
     if data in ("move_left", "move_right"):
         step = -config.MOVE_STEP if data == "move_left" else config.MOVE_STEP
@@ -1181,7 +1194,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
-    elif data in ("attack", "defend", "flee") or data.startswith("tech:"):
+    elif data == "attack" or data == "defend" or data == "flee" or data.startswith("tech:"):
         if data == "attack":
             result = combat.attack(user_id)
         elif data == "defend":
@@ -1189,8 +1202,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "flee":
             result = combat.flee(user_id)
         else:
-            technique_name = data.split(":", 1)[1]
-            result = combat.attack(user_id, technique_name=technique_name)
+            # tech:<slot> — номер техники в боевом наборе
+            try:
+                slot = int(data.split(":", 1)[1])
+            except ValueError:
+                slot = -1
+            equipped = gacha.get_equipped(user_id)
+            if 0 <= slot < len(equipped):
+                technique_name = equipped[slot]
+                result = combat.attack(user_id, technique_name=technique_name)
+            else:
+                result = {"status": "invalid", "log": ["❌ Техника недоступна."]}
 
         if result["status"] == "no_encounter":
             text = "Перед тобой никого нет.\n\n" + location_text(user_id, x)
@@ -1249,7 +1271,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render(query, context, text, inventory_keyboard(user_id))
 
     elif data.startswith("use_item:"):
-        item_name = data.split(":", 1)[1]
+        try:
+            idx = int(data.split(":", 1)[1])
+        except ValueError:
+            idx = -1
+        items = database.get_inventory(user_id)
+        if idx < 0 or idx >= len(items):
+            await render(query, context, "❌ Предмет недоступен. Открой инвентарь заново.",
+                         kb_for(user_id))
+            return
+        item = items[idx]
+        if item["rarity"] != "расходник":
+            await render(query, context, "❌ Этот предмет нельзя использовать.",
+                         inventory_keyboard(user_id))
+            return
+        item_name = item["item_name"]
         result = consumables.use(user_id, item_name)
         prefix = "✅ " if result["ok"] else "❌ "
 
@@ -1262,9 +1298,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
         else:
-            items = database.get_inventory(user_id)
+            items_now = database.get_inventory(user_id)
             pretty = []
-            for i in items:
+            for i in items_now:
                 if i["rarity"] == "расходник":
                     pretty.append(f"🧪 {i['item_name']} x{i['quantity']} (расходник)")
                 elif i["rarity"] == "призыв" or i["item_name"] in bosses.SUMMON_RECIPES:
@@ -1275,7 +1311,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, body, inventory_keyboard(user_id))
 
     elif data.startswith("summon_item:"):
-        item_name = data.split(":", 1)[1]
+        try:
+            idx = int(data.split(":", 1)[1])
+        except ValueError:
+            idx = -1
+        items = database.get_inventory(user_id)
+        if idx < 0 or idx >= len(items):
+            await render(query, context, "❌ Предмет недоступен. Открой инвентарь заново.",
+                         kb_for(user_id))
+            return
+        item = items[idx]
+        is_seal = item["rarity"] == "призыв" or item["item_name"] in bosses.SUMMON_RECIPES
+        if not is_seal:
+            await render(query, context, "❌ Это не ритуальная печать.",
+                         inventory_keyboard(user_id))
+            return
+        item_name = item["item_name"]
         result = bosses.summon(user_id, item_name, x)
         if not result["ok"]:
             text = "❌ " + result["msg"] + "\n\n" + location_text(user_id, x)
@@ -1421,7 +1472,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "tap":
             if len(parts) < 4:
                 return
-            sym = parts[3]
+            # parts[3] — номер символа (ASCII), не эмодзи
+            try:
+                sym_idx = int(parts[3])
+            except ValueError:
+                return
+            symbols = _get_symbols(puzzle)
+            if sym_idx < 0 or sym_idx >= len(symbols):
+                return
+            sym = symbols[sym_idx]
             res = story.check_sequence_tap(user_id, pid, sym)
             r = res["result"]
             total = len(puzzle["sequence"])

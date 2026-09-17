@@ -219,6 +219,7 @@ def add_exp_and_level(user_id: int, amount: int):
     """
     Начисляет опыт, при необходимости повышает уровень.
     Растут HP, макс. ПЭ и Контроль ПЭ.
+    Уровень не может превысить потолок по сюжету: 20 + 20 * (глав пройдено).
     Возвращает (новый_уровень, сколько_уровней_поднято).
     """
     from config import EXP_BASE, HP_PER_LEVEL, MAX_CE_PER_LEVEL, CE_CONTROL_PER_LEVEL
@@ -226,17 +227,35 @@ def add_exp_and_level(user_id: int, amount: int):
     cur = conn.cursor()
     cur.execute("SELECT level, exp, max_hp, max_ce, ce_control FROM players WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
+
+    # Потолок уровня по сюжету (без импорта story.py, чтобы избежать цикличности).
+    max_level = 20
+    try:
+        cur.execute("SELECT chapter_idx, finished FROM player_story WHERE user_id = ?", (user_id,))
+        sr = cur.fetchone()
+        if sr:
+            completed = 6 if sr["finished"] else sr["chapter_idx"]
+            max_level = 20 + 20 * completed
+    except sqlite3.OperationalError:
+        # Таблица player_story ещё не создана — считаем, что глав не пройдено.
+        pass
+
     level, exp = row["level"], row["exp"] + amount
     max_hp, max_ce, ce_control = row["max_hp"], row["max_ce"], row["ce_control"]
 
     leveled = 0
-    while exp >= level * EXP_BASE:
+    while exp >= level * EXP_BASE and level < max_level:
         exp -= level * EXP_BASE
         level += 1
         max_hp += HP_PER_LEVEL
         max_ce += MAX_CE_PER_LEVEL
         ce_control += CE_CONTROL_PER_LEVEL
         leveled += 1
+
+    # Достигли капа — не позволяем опыту переполняться сверх порога,
+    # иначе после снятия капа игрок мгновенно прыгнет на много уровней.
+    if level >= max_level:
+        exp = min(exp, level * EXP_BASE - 1)
 
     if leveled:
         cur.execute(

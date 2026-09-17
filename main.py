@@ -567,12 +567,12 @@ def location_text(user_id: int, x: int) -> str:
     weapon_line = ""
     w = equipment.get_equipped(user_id)
     if w:
-        weapon_line = f"\n⚔️ Оружие: {w['emoji']} <b>{w['name']}</b>"
+        weapon_line = f"\n⚔️ {w['emoji']} <b>{w['name']}</b>"
 
     buffs_line = ""
     buffs = format_active_buffs(user_id)
     if buffs:
-        buffs_line = f"\n✨ Баффы: {buffs}"
+        buffs_line = f"\n✨ {buffs}"
 
     safe_line = ""
     if district.get("safe"):
@@ -587,10 +587,9 @@ def location_text(user_id: int, x: int) -> str:
     return (
         f"{district['emoji']} <b>{district['name']}</b>\n"
         f"<i>{district['description']}</i>\n\n"
-        f"📍 Координата: {x}\n"
-        f"💠 Очки Ассоциации: {player['gold']} | ❤️ HP: {player['hp']}/{player['max_hp']} | "
-        f"🔵 ПЭ: {player['ce']}/{player['max_ce']}\n"
-        f"🧬 Уровень: {player['level']} | 🎚 Контроль ПЭ: {player['ce_control']}"
+        f"📍 {x}\n"
+        f"❤️ {player['hp']}/{player['max_hp']}  ·  🔵 {player['ce']}/{player['max_ce']}  ·  💠 {player['gold']}\n"
+        f"🧬 {player['level']}  ·  🎚 {player['ce_control']}"
         f"{weapon_line}"
         f"{buffs_line}\n"
         f"{world_bounds_line(player['level'])}"

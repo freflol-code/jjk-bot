@@ -7,39 +7,25 @@ raid.py — рейды на Сукуну для 1-5 игроков.
 - Пальцы добываются только в сюжетке (см. story.py), поэтому их можно
   использовать многократно с задержкой.
 - Уровень рейда (1/2/3 пальца) задаёт создатель. Чтобы присоединиться,
-  у игрока должно быть НЕ МЕНЬШЕ пальцев, чем в рейде — иначе он не
-  может войти (иначе 1 палец «превращался» бы в 3-пальцевого Сукуну).
-- Лобби: создатель выбирает кол-во пальцев (1/2/3), открывает рейд,
-  остальные присоединяются по deep-link.
-- Бой: пошаговый. Каждый живой игрок делает по одной атаке, затем
-  Сукуна отвечает одной из двух техник (обычный удар / рассечение).
+  у игрока должно быть НЕ МЕНЬШЕ пальцев, чем в рейде.
+- Бой: пошаговый. Каждый живой игрок делает по одной атаке — обычной
+  или врождённой техникой (если хватает ПЭ). Затем Сукуна отвечает.
 - Сукуна может критовать.
-- Рейд заканчивается, только когда все игроки мертвы (поражение)
-  или Сукуна убит (победа). После окончания все игроки перебрасываются
-  в школу (X=0).
-- Победа: каждый выживший получает золото/опыт/дроп.
-- Поражение: награды нет, но пальцы всё равно в КД.
+- Победа/поражение заканчивают рейд, все возвращаются в школу (X=0).
 """
 import json
 import random
 import time
 
 import database
+import gacha
 
 
-# ============================================================
-#  НАСТРОЙКИ
-# ============================================================
-
-FINGER_CD_SECONDS = 12 * 3600     # 12 часов КД на пальцы
+FINGER_CD_SECONDS = 12 * 3600
 MAX_PLAYERS = 5
 SUKUNA_NAME = "Сукуна (Рейд-босс)"
 SUKUNA_EMOJI = "👺"
 
-
-# ============================================================
-#  ФАЗЫ СУКУНЫ
-# ============================================================
 
 SUKUNA_PHASES = {
     1: {
@@ -65,10 +51,6 @@ SUKUNA_PHASES = {
     },
 }
 
-
-# ============================================================
-#  ТАБЛИЦЫ
-# ============================================================
 
 _db_ready = False
 
@@ -142,7 +124,6 @@ def can_use_fingers(user_id: int) -> bool:
 
 
 def get_available_fingers(user_id: int) -> int:
-    """Сколько пальцев игрок МОЖЕТ поставить в свой рейд (1..3)."""
     if not can_use_fingers(user_id):
         return 0
     return min(3, _get_finger_count(user_id))
@@ -293,7 +274,6 @@ def join_raid(raid_id: int, user_id: int) -> dict:
             return {"ok": False, "msg": f"Твои пальцы в КД ещё {format_cooldown(left)}."}
         return {"ok": False, "msg": "У тебя нет пальцев Сукуны."}
 
-    # --- ГЛАВНАЯ ПРОВЕРКА: у игрока должно быть НЕ МЕНЬШЕ пальцев, чем в рейде ---
     required = raid["fingers"]
     have = _get_finger_count(user_id)
     if have < required:
@@ -406,7 +386,10 @@ def is_player_turn(raid_id: int, user_id: int) -> bool:
     return _current_player(raid) == user_id
 
 
-def player_attack(raid_id: int, user_id: int) -> dict:
+def player_attack(raid_id: int, user_id: int, technique_name: str | None = None) -> dict:
+    """Атака игрока. Если technique_name задано — используется врождённая
+    техника (тратится ПЭ, урон считается по формуле техники). Иначе — обычная
+    физическая атака."""
     raid = get_raid(raid_id)
     if not raid or raid["status"] != "battle":
         return {"ok": False, "msg": "Бой не идёт."}
@@ -414,19 +397,41 @@ def player_attack(raid_id: int, user_id: int) -> dict:
         return {"ok": False, "msg": "Сейчас не твой ход."}
 
     player = database.get_or_create_player(user_id, "")
-    from combat import _physical_damage, _black_flash_chance
+    from combat import _physical_damage, _technique_damage, _black_flash_chance
     from config import PLAYER_CRIT_MULT
 
-    dmg = _physical_damage(user_id, player)
+    technique = None
+    if technique_name:
+        technique = gacha.get_technique(technique_name)
+        if not technique or technique_name not in gacha.get_equipped(user_id):
+            return {"ok": False, "msg": "Эта техника недоступна в бою."}
+        if player["ce"] < technique["ce_cost"]:
+            return {"ok": False, "msg": (
+                f"Не хватает ПЭ: нужно {technique['ce_cost']}🔵, "
+                f"у тебя {player['ce']}🔵."
+            )}
+
+    if technique:
+        dmg = _technique_damage(user_id, player, technique)
+        verb = f"использовал «{technique_name}»"
+    else:
+        dmg = _physical_damage(user_id, player)
+        verb = "атаковал"
+
     black_flash = random.random() < _black_flash_chance(user_id)
     if black_flash:
         dmg = int(dmg * PLAYER_CRIT_MULT)
 
+    # Списываем ПЭ, если использовали технику
+    if technique:
+        database.update_player_ce(user_id, player["ce"] - technique["ce_cost"])
+
     raid["boss_hp"] = max(0, raid["boss_hp"] - dmg)
     nick = player["username"] or f"Игрок {user_id}"
-    line = (f"🗡 <b>{nick}</b> "
-            + ("⚫⚡ ЧЁРНАЯ ВСПЫШКА! " if black_flash else "")
-            + f"нанёс <b>{dmg}</b> урона Сукуне.")
+    line = (f"{technique['emoji'] + ' ' if technique else '🗡 '}<b>{nick}</b> "
+            + (f"использовал «{technique_name}» " if technique else "атаковал ")
+            + ("⚫⚡ <b>ЧЁРНАЯ ВСПЫШКА!</b> " if black_flash else "")
+            + f"и нанёс <b>{dmg}</b> урона Сукуне.")
     raid["log"].append(line)
     raid["log"] = raid["log"][-12:]
 
@@ -437,7 +442,6 @@ def player_attack(raid_id: int, user_id: int) -> dict:
     _save_raid(raid)
 
     if _current_player(raid) is None:
-        # Все живые сходили — очередь Сукуны
         return _sukuna_turn(raid)
 
     next_id = _current_player(raid)
@@ -491,7 +495,6 @@ def _sukuna_turn(raid: dict) -> dict:
 
     raid["log"] = raid["log"][-12:]
 
-    # Сброс очереди на первого живого
     raid["turn_idx"] = 0
     _save_raid(raid)
 
@@ -504,7 +507,6 @@ def _sukuna_turn(raid: dict) -> dict:
 
 
 def _send_all_to_school(raid_id: int):
-    """Перебрасывает всех участников рейда в школу (X=0)."""
     for p in get_participants(raid_id):
         database.update_player_x(p["user_id"], 0)
         database.clear_encounter(p["user_id"])
@@ -582,14 +584,12 @@ def format_lobby(raid_id: int) -> str:
 
 
 def format_battle(raid_id: int, viewer_id: int) -> str:
-    """Формат боя с точки зрения конкретного игрока: свои статы + все + Сукуна."""
     raid = get_raid(raid_id)
     if not raid:
         return "Рейд не найден."
 
     parts = get_participants(raid_id)
     cur_id = _current_player(raid)
-
     viewer = next((p for p in parts if p["user_id"] == viewer_id), None)
 
     lines = [
@@ -599,7 +599,6 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
         "",
     ]
 
-    # Свой блок
     if viewer:
         vp = database.get_or_create_player(viewer_id, "")
         from equipment import get_equipped
@@ -612,7 +611,6 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
         lines.append(f"   ⚔️ Оружие: {weapon_txt}")
         lines.append("")
 
-    # Отряд
     lines.append("<b>Отряд:</b>")
     for p in parts:
         nick = database.get_or_create_player(p["user_id"], "")["username"] or f"Игрок {p['user_id']}"

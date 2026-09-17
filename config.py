@@ -7,7 +7,7 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8429718072:AAEx88oIord1HwyX6kijZsh2dvu0AjJp98Q")
 
-DB_PATH = "game.db"
+DB_PATH = "data/game.db"
 
 # --- Мир и перемещение ---
 MAX_WORLD = 260                  # крайняя координата карты (мир: -260..260)

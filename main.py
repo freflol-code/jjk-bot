@@ -32,7 +32,6 @@ import equipment
 import leaderboard
 import story
 import raid
-from gifs_data import TECHNIQUE_GIFS
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -75,8 +74,6 @@ def format_active_buffs(user_id: int) -> str:
     return " | ".join(parts)
 
 
-# ---------------------- Хелперы сюжета и головоломок ----------------------
-
 def _get_current_step_info(user_id: int):
     chapter = story.get_current_chapter(user_id)
     if not chapter:
@@ -110,8 +107,6 @@ def puzzle_keyboard(puzzle_id: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="story_temp_back")])
     return InlineKeyboardMarkup(rows)
 
-
-# ---------------------- Клавиатуры ----------------------
 
 def main_keyboard(user_id: int):
     in_combat = database.get_encounter(user_id) is not None
@@ -414,8 +409,6 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     ])
 
 
-# ---------- Клавиатуры РЕЙДА ----------
-
 def raid_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     available = raid.get_available_fingers(user_id)
     rows = []
@@ -471,8 +464,6 @@ def raid_finished_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-# ---------------------- Рендер ----------------------
-
 def truncate_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
     if len(text) <= limit:
         return text
@@ -523,36 +514,13 @@ def district_image_for_x(x: int) -> str | None:
 
 async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                           effect_key: str | None, ttl: int = EFFECT_GIF_TTL_SECONDS):
-    """Отправляет гифку эффекта/техники.
-    Приоритет:
-      1. file_id из TECHNIQUE_GIFS (для техник)
-      2. локальный файл в assets/techniques/ или assets/effects/
-    """
     if not effect_key:
         return
-
-    # --- Ветка техник ---
+    path = None
     if effect_key.startswith("technique:"):
         tname = effect_key.split(":", 1)[1]
-
-        # 1. file_id из словаря
-        file_id = TECHNIQUE_GIFS.get(tname)
-        if file_id:
-            try:
-                msg = await context.bot.send_animation(chat_id=chat_id, animation=file_id)
-                context.job_queue.run_once(
-                    delete_message_job, when=ttl,
-                    data={"chat_id": chat_id, "message_id": msg.message_id},
-                    name=f"del_effect_{chat_id}_{msg.message_id}",
-                )
-                return
-            except Exception as e:
-                logger.warning(f"Не удалось отправить file_id для {tname}: {e}")
-
-        # 2. локальный файл по имени техники
         path = assets.get_technique_image(tname)
         if not path:
-            # 3. локальная заглушка по редкости
             t = gacha.get_technique(tname)
             if t:
                 rarity_map = {
@@ -565,25 +533,9 @@ async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                 key = rarity_map.get(t["rarity"])
                 if key:
                     path = assets.get_technique_image(key)
-        if not path:
-            return
-        try:
-            with open(path, "rb") as media_file:
-                if assets.is_animation(path):
-                    msg = await context.bot.send_animation(chat_id=chat_id, animation=media_file)
-                else:
-                    msg = await context.bot.send_photo(chat_id=chat_id, photo=media_file)
-            context.job_queue.run_once(
-                delete_message_job, when=ttl,
-                data={"chat_id": chat_id, "message_id": msg.message_id},
-                name=f"del_effect_{chat_id}_{msg.message_id}",
-            )
-        except Exception as e:
-            logger.warning(f"Не удалось показать эффект {effect_key}: {e}")
-        return
+    else:
+        path = assets.get_effect_image(effect_key)
 
-    # --- Обычные эффекты (black_flash, victory, death и т.д.) ---
-    path = assets.get_effect_image(effect_key)
     if not path:
         return
     try:
@@ -600,8 +552,6 @@ async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
     except Exception as e:
         logger.warning(f"Не удалось показать эффект {effect_key}: {e}")
 
-
-# ---------------------- Тексты ----------------------
 
 def location_text(user_id: int, x: int) -> str:
     district = get_district_by_x(x)
@@ -737,8 +687,6 @@ def _quests_done_text(done: list[dict]) -> str:
     return "\n".join(lines)
 
 
-# ---------------------- Хелперы рейда ----------------------
-
 async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     try:
         name = context.bot.username
@@ -797,8 +745,6 @@ async def _notify_raid_players(context: ContextTypes.DEFAULT_TYPE,
         except Exception as e:
             logger.warning(f"Не удалось уведомить рейд-игрока {uid}: {e}")
 
-
-# ---------------------- Команды ----------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -897,8 +843,6 @@ async def send_inventory(user_id: int, sender):
                  reply_markup=inventory_keyboard(user_id))
 
 
-# ---------------------- Текстовые ответы на головоломки ----------------------
-
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or not update.message or not update.message.text:
@@ -925,8 +869,6 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         else:
             await update.message.reply_html(body, reply_markup=kb_for(user.id))
 
-
-# ---------------------- Кнопки ----------------------
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -959,8 +901,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
     done: list[dict] = []
-
-    # ================= РЕЙД =================
 
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
@@ -1104,9 +1044,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
 
-    # ================= ОБЫЧНЫЕ ДЕЙСТВИЯ =================
-
-    # ---------- Движение ----------
     if data in ("move_left", "move_right"):
         step = -config.MOVE_STEP if data == "move_left" else config.MOVE_STEP
         raw_new_x = x + step
@@ -1145,7 +1082,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      image_path=district_image_for_x(raw_new_x))
         return
 
-    # ---------- Отдых ----------
     elif data == "rest":
         district = get_district_by_x(x)
         if district["id"] != "jujutsu_high":
@@ -1158,7 +1094,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render(query, context, text, kb_for(user_id), image_path=district_image_for_x(x))
         return
 
-    # ---------- Патруль ----------
     elif data == "patrol":
         district = get_district_by_x(x)
 
@@ -1193,7 +1128,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
-    # ---------- Бой ----------
     elif data in ("attack", "defend", "flee") or data.startswith("tech:"):
         if data == "attack":
             result = combat.attack(user_id)
@@ -1245,7 +1179,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if result.get("effect"):
             await send_effect_gif(context, query.message.chat_id, result["effect"])
 
-    # ---------- Инвентарь ----------
     elif data == "inventory":
         items = database.get_inventory(user_id)
         if not items:
@@ -1304,12 +1237,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
-    # ---------- Карта ----------
     elif data == "map":
         text = "🗺 <b>Карта районов Токио</b>\n\n" + get_world_map_text(x)
         await render(query, context, text, kb_for(user_id))
 
-    # ---------- Сюжет ----------
     elif data == "story_menu":
         text = story.format_story_screen(user_id)
         await render(query, context, text, story_menu_keyboard(user_id))
@@ -1515,7 +1446,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
 
-    # ---------- Профиль ----------
     elif data == "profile_menu":
         await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
 
@@ -1549,7 +1479,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await render(query, context, text, keyboard)
 
-    # ---------- Доска лидеров ----------
     elif data == "leaderboard":
         text = leaderboard.format_leaderboard(user_id, limit=10)
         keyboard = InlineKeyboardMarkup([
@@ -1558,7 +1487,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await render(query, context, text, keyboard)
 
-    # ---------- Задания ----------
     elif data == "quests_menu":
         text = (
             "📋 <b>Задания Годжо</b>\n\n"
@@ -1580,7 +1508,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = prefix + res["msg"] + "\n\n" + quests.format_quests_text(user_id, period)
         await render(query, context, text, quests_period_keyboard(period))
 
-    # ---------- Гача ----------
     elif data == "gacha_menu":
         context.user_data["gacha_from"] = "game"
         await render(query, context, gacha_menu_text(user_id), gacha_menu_keyboard())
@@ -1664,7 +1591,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_list_keyboard(user_id), image_path=image_path)
 
-    # ---------- НПС ----------
     elif data.startswith("npc:"):
         npc_id = data.split(":", 1)[1]
         npc = shop.get_npc(npc_id)
@@ -1675,7 +1601,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_npc_image(npc_id)
         await render(query, context, text, shop_menu_keyboard(npc_id), image_path=image_path)
 
-    # ---------- Расходники ----------
     elif data.startswith("shop_buy:"):
         npc_id = data.split(":", 1)[1]
         npc = shop.get_npc(npc_id)
@@ -1760,7 +1685,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_npc_image(f"{npc_id}_shop")
         await render(query, context, text, shop_sell_keyboard(npc_id, user_id), image_path=image_path)
 
-    # ---------- Склад проклятого оружия ----------
     elif data.startswith("gear_menu:"):
         npc_id = data.split(":", 1)[1]
         text = (
@@ -1871,7 +1795,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = prefix + result["msg"]
         await render(query, context, text, gear_owned_keyboard(user_id))
 
-    # ---------- Назад ----------
     elif data == "back_to_game":
         if context.user_data.pop("prev_screen", None) == "profile":
             await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
@@ -1897,8 +1820,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "noop":
         return
 
-
-# ---------------------- Планировщик ----------------------
 
 async def delete_message_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data or {}
@@ -1946,8 +1867,6 @@ async def clear_buffs_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Очищено истёкших баффов: {removed}")
 
 
-# ---------------------- Миграции ----------------------
-
 def migrate_curse_seals():
     conn = database.get_conn()
     cur = conn.cursor()
@@ -1962,8 +1881,6 @@ def migrate_curse_seals():
     if total > 0:
         logger.info(f"Миграция печатей: исправлено {total} записей")
 
-
-# ---------------------- Точка входа ----------------------
 
 def main():
     from health import start_health_server

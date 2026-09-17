@@ -171,8 +171,8 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Медсестра-Смерть (Особый класс)",
-                "hp": 700,
-                "dmg_min": 24, "dmg_max": 34,
+                "hp": 805,
+                "dmg_min": 28, "dmg_max": 39,
                 "emoji": "💀",
                 "reward_gold": 500,
                 "reward_exp": 400,
@@ -199,9 +199,9 @@ CHAPTERS = [
             },
             {
                 "type": "puzzle",
-                "target": "subway_brake",
+                "target": "subway_graffiti",
                 "goal": 1,
-                "hint": "🧩 Успей нажать на экстренный тормоз точно в нужный момент",
+                "hint": "🧩 Расшифруй граффити на стене вагона",
             },
             {
                 "type": "kill_boss",
@@ -389,14 +389,21 @@ PUZZLES = {
         ],
         "flavor": "На двери в морг — механический кодовый замок на 3 цифры.",
     },
-    "subway_brake": {
+    "subway_graffiti": {
         "chapter_id": "subway_finger",
-        "type": "reaction",
-        "delay_min": 2.5,
-        "delay_max": 4.5,
+        "type": "graffiti",
+        "mapping": [
+            ("🔺", "С"),
+            ("🔵", "Т"),
+            ("⭐", "О"),
+            ("⬛", "П"),
+        ],
+        "word_symbols": "🔺🔵⭐⬛",
+        "answer": "СТОП",
         "flavor": (
-            "Вагон срывается с места. Единственный шанс — стоп-кран, но дёрнуть "
-            "его нужно точно в узком окне: не раньше и не позже."
+            "Вагон стоит на рельсах, но что-то в нём не так. На стене "
+            "кто-то оставил граффити: символы рядом с буквами. "
+            "Похоже, это ключ к тому, что нужно сделать."
         ),
     },
     "seal_sequence": {
@@ -500,6 +507,15 @@ def format_puzzle_prompt(user_id: int) -> str | None:
             lines.append(f"• {clue}")
         lines.append("")
         lines.append("Отправь код тремя цифрами.")
+    elif ptype == "graffiti":
+        lines.append("На стене вагона — граффити:")
+        lines.append("")
+        for sym, letter in puzzle["mapping"]:
+            lines.append(f"  {sym}  =  <b>{letter}</b>")
+        lines.append("")
+        lines.append(f"Ниже крупно нацарапано: <b>{puzzle['word_symbols']}</b>")
+        lines.append("")
+        lines.append("Отправь расшифрованное слово одним сообщением.")
     elif ptype == "riddle":
         lines.append(puzzle["question"])
         lines.append("")
@@ -525,7 +541,7 @@ def solve_current_puzzle_text(user_id: int, text: str) -> dict:
     i, puzzle_id, puzzle = found
     ptype = puzzle["type"]
 
-    if ptype not in ("cipher", "code_lock", "riddle"):
+    if ptype not in ("cipher", "code_lock", "riddle", "graffiti"):
         return {"active": True, "correct": False, "wrong_type": True,
                 "puzzle_id": puzzle_id, "step_idx": i}
 
@@ -537,6 +553,8 @@ def solve_current_puzzle_text(user_id: int, text: str) -> dict:
         correct = digits == puzzle["code"]
     elif ptype == "riddle":
         correct = _normalize(text) in [a.lower() for a in puzzle["answers"]]
+    elif ptype == "graffiti":
+        correct = _normalize(text) == puzzle["answer"].lower()
 
     if correct:
         add_progress(user_id, "puzzle", target=puzzle_id, amount=1)

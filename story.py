@@ -8,9 +8,30 @@ story.py — сюжетные главы «Магической Битвы: То
 Если уровень недостаточен — кнопка «Отправиться» в меню сюжета заблокирована.
 
 HP мобов и боссов в temp-локациях ослаблены на 25% относительно базового баланса.
+
+ОГРАНИЧЕНИЕ УРОВНЯ:
+Пока игрок не прошёл Главу 1, его уровень не может подняться выше 20.
+За каждую пройденную главу потолок увеличивается на 20:
+    0 глав пройдено  -> максимум 20
+    1 глава пройдена -> максимум 40
+    2 главы пройдены -> максимум 60
+    3 главы пройдены -> максимум 80
+    4 главы пройдены -> максимум 100
+    5 глав пройдено  -> максимум 120
+    6 глав пройдено (весь сюжет закрыт) -> максимум 140
 """
 import json
+import random
+import time
 import database
+
+
+# ============================================================
+#  НАСТРОЙКИ ЛИМИТА УРОВНЯ
+# ============================================================
+
+LEVEL_CAP_BASE = 20
+LEVEL_CAP_PER_CHAPTER = 20
 
 
 # ============================================================
@@ -18,7 +39,6 @@ import database
 # ============================================================
 
 CHAPTERS = [
-    # ---------- Глава 1: Пролог ----------
     {
         "id": "prologue",
         "num": 1,
@@ -40,8 +60,6 @@ CHAPTERS = [
         "reward_gold": 200,
         "reward_exp": 150,
     },
-
-    # ---------- Глава 2: Палец Сукуны ----------
     {
         "id": "finger_hunt",
         "num": 2,
@@ -58,6 +76,12 @@ CHAPTERS = [
                 "target": "abandoned_school",
                 "goal": 4,
                 "hint": "Изгони 4 проклятия в Заброшенной школе",
+            },
+            {
+                "type": "puzzle",
+                "target": "gojo_cipher",
+                "goal": 1,
+                "hint": "🧩 Разгадай шифр в блокноте и узнай пароль от подвала",
             },
             {
                 "type": "kill_boss",
@@ -96,7 +120,481 @@ CHAPTERS = [
             },
         },
     },
+    {
+        "id": "hospital_finger",
+        "num": 3,
+        "title": "Второй палец",
+        "min_level": 5,
+        "intro": (
+            "Есть зацепка. Старая больница у залива закрыта уже десять лет — "
+            "официально из-за пожара. На деле там до сих пор что-то дышит. "
+            "Ещё один палец Сукуны, я почти уверен. Иди и проверь, но не задерживайся там до темноты."
+        ),
+        "steps": [
+            {
+                "type": "kill",
+                "target": "abandoned_hospital",
+                "goal": 4,
+                "hint": "Изгони 4 проклятия в Заброшенной больнице",
+            },
+            {
+                "type": "puzzle",
+                "target": "hospital_code",
+                "goal": 1,
+                "hint": "🧩 Разгадай код от двери морга",
+            },
+            {
+                "type": "kill_boss",
+                "target": "Медсестра-Смерть (Особый класс)",
+                "goal": 1,
+                "hint": "Победи Медсестру-Смерть в операционной больницы",
+            },
+            {
+                "type": "have_item",
+                "target": "Палец Сукуны",
+                "goal": 1,
+                "hint": "Забери Палец Сукуны и вернись к Годжо",
+            },
+        ],
+        "reward_gold": 700,
+        "reward_exp": 550,
+        "temp_district": {
+            "id": "abandoned_hospital",
+            "name": "Заброшенная больница",
+            "emoji": "🏥",
+            "description": "Запах формалина въелся в стены. На этажах до сих пор горит аварийный свет.",
+            "curses": [
+                ("Проклятый Пациент", "4-й класс", 100, 13, 17, "🤕", "Использованный Бинт", 40),
+                ("Проклятая Медсестра", "3-й класс", 130, 16, 21, "💉", "Шприц с Тёмной Жидкостью", 30),
+                ("Тень Морга", "2-й класс", 170, 20, 26, "⚰️", "Табличка с Номером", 25),
+                ("Безумный Хирург", "1-й класс", 270, 28, 36, "🔪", "Скальпель Проклятия", 5),
+            ],
+            "boss": {
+                "name": "Медсестра-Смерть (Особый класс)",
+                "hp": 700,
+                "dmg_min": 24, "dmg_max": 34,
+                "emoji": "💀",
+                "reward_gold": 500,
+                "reward_exp": 400,
+                "drop_item": ("Палец Сукуны", "легендарный", 1),
+            },
+        },
+    },
+    {
+        "id": "subway_finger",
+        "num": 4,
+        "title": "Третий палец",
+        "min_level": 7,
+        "intro": (
+            "Затопленная ветка метро, закрытая после аварии много лет назад. "
+            "Ассоциация давно туда не суётся — сигнал проклятой энергии там зашкаливает. "
+            "Если моя догадка верна, это последний палец, который нам по силам достать своими руками. Будь готов."
+        ),
+        "steps": [
+            {
+                "type": "kill",
+                "target": "flooded_subway",
+                "goal": 4,
+                "hint": "Изгони 4 проклятия в Затопленном метро",
+            },
+            {
+                "type": "puzzle",
+                "target": "subway_brake",
+                "goal": 1,
+                "hint": "🧩 Успей нажать на экстренный тормоз точно в нужный момент",
+            },
+            {
+                "type": "kill_boss",
+                "target": "Пожиратель Тоннелей (Особый класс)",
+                "goal": 1,
+                "hint": "Победи Пожирателя Тоннелей в глубине станции",
+            },
+            {
+                "type": "have_item",
+                "target": "Палец Сукуны",
+                "goal": 1,
+                "hint": "Забери Палец Сукуны и вернись к Годжо",
+            },
+        ],
+        "reward_gold": 900,
+        "reward_exp": 700,
+        "temp_district": {
+            "id": "flooded_subway",
+            "name": "Затопленное метро",
+            "emoji": "🚇",
+            "description": "Вода по колено, ржавые вагоны в темноте, и эхо, которое не должно отвечать.",
+            "curses": [
+                ("Проклятый Пассажир", "4-й класс", 105, 14, 18, "🚶", "Проездной Билет", 40),
+                ("Утопленник в Форме", "3-й класс", 135, 17, 22, "🎫", "Ржавый Ключ", 30),
+                ("Голос из Тоннеля", "2-й класс", 175, 21, 27, "📢", "Сломанный Фонарь", 25),
+                ("Машинист Бездны", "1-й класс", 280, 29, 37, "🚈", "Чёрный Жетон", 5),
+            ],
+            "boss": {
+                "name": "Пожиратель Тоннелей (Особый класс)",
+                "hp": 800,
+                "dmg_min": 26, "dmg_max": 38,
+                "emoji": "🕳️",
+                "reward_gold": 600,
+                "reward_exp": 480,
+                "drop_item": ("Палец Сукуны", "легендарный", 1),
+            },
+        },
+    },
+    {
+        "id": "awakening",
+        "num": 5,
+        "title": "Пробуждение Сукуны",
+        "min_level": 10,
+        "intro": (
+            "Три пальца собраны. Этого достаточно, чтобы Сукуна начал шевелиться внутри своего вместилища. "
+            "Ассоциация выставила временный барьер на окраине, чтобы сдержать всплеск, если станет хуже. "
+            "Держись начеку — то, что мы разбудим сегодня, может оказаться сильнее всего, с чем ты сталкивался."
+        ),
+        "steps": [
+            {
+                "type": "kill",
+                "target": "cursed_arena",
+                "goal": 5,
+                "hint": "Изгони 5 проклятий на Проклятой арене",
+            },
+            {
+                "type": "puzzle",
+                "target": "seal_sequence",
+                "goal": 1,
+                "hint": "🧩 Повтори порядок печатей барьера",
+            },
+            {
+                "type": "kill_boss",
+                "target": "Сукуна (3 пальца) (Особый класс)",
+                "goal": 1,
+                "hint": "Победи пробудившегося Сукуну",
+            },
+            {
+                "type": "have_item",
+                "target": "Метка Сукуны",
+                "goal": 1,
+                "hint": "Забери Метку Сукуны и вернись к Годжо",
+            },
+        ],
+        "reward_gold": 1500,
+        "reward_exp": 1200,
+        "temp_district": {
+            "id": "cursed_arena",
+            "name": "Проклятая арена",
+            "emoji": "⛩️",
+            "description": "Временный барьер трещит по швам. Воздух густой от проклятой энергии, земля дрожит.",
+            "curses": [
+                ("Отголосок Сукуны", "4-й класс", 110, 15, 19, "👹", "Осколок Ауры", 40),
+                ("Клык Проклятого Духа", "3-й класс", 140, 18, 23, "🦷", "Кровавая Метка", 30),
+                ("Страж Барьера", "2-й класс", 180, 22, 28, "🛡️", "Печать Барьера", 25),
+                ("Порождение Плоти", "1-й класс", 290, 30, 39, "🩸", "Плоть Проклятия", 5),
+            ],
+            "boss": {
+                "name": "Сукуна (3 пальца) (Особый класс)",
+                "hp": 1000,
+                "dmg_min": 30, "dmg_max": 42,
+                "emoji": "👺",
+                "reward_gold": 800,
+                "reward_exp": 650,
+                "drop_item": ("Метка Сукуны", "легендарный", 1),
+            },
+        },
+    },
+    {
+        "id": "shibuya_incident",
+        "num": 6,
+        "title": "Инцидент в Сибуе",
+        "min_level": 14,
+        "intro": (
+            "Сегодня Хэллоуин, и весь квартал Сибуи накрыло барьером — заранее спланированная ловушка. "
+            "Связь потеряна, старшие маги один за другим выходят из строя, а я застрял там, где не могу помочь. "
+            "Слушай внимательно: внутри действует существо, способное менять тела, как перчатки. Не геройствуй — просто выживи и продержись до прорыва барьера."
+        ),
+        "steps": [
+            {
+                "type": "kill",
+                "target": "shibuya_barrier",
+                "goal": 5,
+                "hint": "Изгони 5 проклятий за барьером Сибуи",
+            },
+            {
+                "type": "puzzle",
+                "target": "infinity_riddle",
+                "goal": 1,
+                "hint": "🧩 Отгадай загадку Годжо про его технику",
+            },
+            {
+                "type": "kill_boss",
+                "target": "Махито (Особый класс)",
+                "goal": 1,
+                "hint": "Победи Махито на разрушенной площади Сибуи",
+            },
+            {
+                "type": "have_item",
+                "target": "Душа Проклятия",
+                "goal": 1,
+                "hint": "Забери Душу Проклятия и вернись к Годжо",
+            },
+        ],
+        "reward_gold": 2500,
+        "reward_exp": 2000,
+        "temp_district": {
+            "id": "shibuya_barrier",
+            "name": "Барьер Сибуи",
+            "emoji": "🌆",
+            "description": "Неоновые вывески мигают над пустыми улицами. За барьером застряли сотни ни в чём не повинных людей — и то, что охотится на них.",
+            "curses": [
+                ("Проклятый Прохожий", "4-й класс", 120, 16, 20, "🧍", "Разбитый Смартфон", 40),
+                ("Кукла Плоти", "3-й класс", 150, 19, 25, "🎎", "Кусок Плоти", 30),
+                ("Тень Клетки", "2-й класс", 190, 23, 29, "🕸️", "Обрывок Сети", 25),
+                ("Химера Проклятия", "1-й класс", 300, 32, 41, "🧟", "Ядро Проклятия", 5),
+            ],
+            "boss": {
+                "name": "Махито (Особый класс)",
+                "hp": 1400,
+                "dmg_min": 35, "dmg_max": 48,
+                "emoji": "🎭",
+                "reward_gold": 1000,
+                "reward_exp": 800,
+                "drop_item": ("Душа Проклятия", "легендарный", 1),
+            },
+        },
+    },
 ]
+
+
+# ============================================================
+#  ГОЛОВОЛОМКИ
+# ============================================================
+
+PUZZLES = {
+    "gojo_cipher": {
+        "chapter_id": "finger_hunt",
+        "type": "cipher",
+        "shift": 3,
+        "answer": "ПОДВАЛ",
+        "flavor": (
+            "Среди вещей Хранителя Пальца — потрёпанный блокнот. На последней "
+            "странице кто-то оставил шифр Цезаря со сдвигом на 3 буквы."
+        ),
+    },
+    "hospital_code": {
+        "chapter_id": "hospital_finger",
+        "type": "code_lock",
+        "code": "683",
+        "clues": [
+            "Первая цифра: 9 минус 3",
+            "Вторая цифра: 2 умножить на 4",
+            "Третья цифра: остаток от деления 15 на 4",
+        ],
+        "flavor": "На двери в морг — механический кодовый замок на 3 цифры.",
+    },
+    "subway_brake": {
+        "chapter_id": "subway_finger",
+        "type": "reaction",
+        "delay_min": 2.5,
+        "delay_max": 4.5,
+        "flavor": (
+            "Вагон срывается с места. Единственный шанс — стоп-кран, но дёрнуть "
+            "его нужно точно в узком окне: не раньше и не позже."
+        ),
+    },
+    "seal_sequence": {
+        "chapter_id": "awakening",
+        "type": "sequence",
+        "sequence": ["🔺", "🔵", "⬛", "🔺", "⭐"],
+        "flavor": (
+            "Чтобы пройти сквозь временный барьер, нужно повторить порядок "
+            "проклятых печатей, вспыхивающих на его границе."
+        ),
+    },
+    "infinity_riddle": {
+        "chapter_id": "shibuya_incident",
+        "type": "riddle",
+        "question": (
+            "«Между мной и любой атакой всегда остаётся крошечный зазор — он "
+            "замедляет всё, что летит в мою сторону, будто пространство "
+            "растягивается само по себе. Как называется эта техника?»"
+        ),
+        "answers": ["бесконечность", "муре кушо", "мурё кусё", "предел безграничного"],
+        "flavor": (
+            "Пока ты пробираешься через барьер, в голове звучит голос Годжо — "
+            "он загадывает загадку, чтобы отвлечь тебя от паники."
+        ),
+    },
+}
+
+RU_ALPHABET = "АБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
+
+
+def _caesar_encode(text: str, shift: int) -> str:
+    out = []
+    for ch in text.upper():
+        if ch in RU_ALPHABET:
+            idx = RU_ALPHABET.index(ch)
+            out.append(RU_ALPHABET[(idx + shift) % len(RU_ALPHABET)])
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+def _normalize(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def get_puzzle(puzzle_id: str) -> dict | None:
+    return PUZZLES.get(puzzle_id)
+
+
+def _get_puzzle_state(user_id: int, puzzle_id: str) -> dict:
+    state = _get_row(user_id)
+    return state["progress"].get("_puzzle", {}).get(puzzle_id, {})
+
+
+def _set_puzzle_state(user_id: int, puzzle_id: str, data: dict):
+    state = _get_row(user_id)
+    progress = state["progress"]
+    progress.setdefault("_puzzle", {})
+    progress["_puzzle"][puzzle_id] = data
+    state["progress"] = progress
+    _save(user_id, state)
+
+
+def get_current_puzzle_step(user_id: int):
+    chapter = get_current_chapter(user_id)
+    if not chapter:
+        return None
+    state = _get_row(user_id)
+    for i, step in enumerate(chapter["steps"]):
+        if step["type"] != "puzzle":
+            continue
+        if state["progress"].get(str(i), 0) >= step["goal"]:
+            continue
+        puzzle_id = step["target"]
+        puzzle = PUZZLES.get(puzzle_id)
+        if puzzle:
+            return i, puzzle_id, puzzle
+    return None
+
+
+def format_puzzle_prompt(user_id: int) -> str | None:
+    found = get_current_puzzle_step(user_id)
+    if not found:
+        return None
+    _, _, puzzle = found
+    ptype = puzzle["type"]
+
+    lines = ["🧩 <b>Головоломка</b>", "", puzzle["flavor"], ""]
+
+    if ptype == "cipher":
+        encoded = _caesar_encode(puzzle["answer"], puzzle["shift"])
+        lines.append(f"Зашифрованное слово (сдвиг {puzzle['shift']}):")
+        lines.append(f"<code>{encoded}</code>")
+        lines.append("")
+        lines.append("Отправь расшифрованное слово одним сообщением.")
+    elif ptype == "code_lock":
+        lines.append("Подсказки:")
+        for clue in puzzle["clues"]:
+            lines.append(f"• {clue}")
+        lines.append("")
+        lines.append("Отправь код тремя цифрами.")
+    elif ptype == "riddle":
+        lines.append(puzzle["question"])
+        lines.append("")
+        lines.append("Отправь ответ одним словом или короткой фразой.")
+    elif ptype == "reaction":
+        lines.append("Нажми кнопку «▶️ Начать», а затем «🛑 Тормоз» точно в нужный момент.")
+    elif ptype == "sequence":
+        lines.append("Нажми «▶️ Показать печати», запомни порядок, затем повтори его кнопками.")
+
+    return "\n".join(lines)
+
+
+def solve_current_puzzle_text(user_id: int, text: str) -> dict:
+    found = get_current_puzzle_step(user_id)
+    if not found:
+        return {"active": False}
+
+    i, puzzle_id, puzzle = found
+    ptype = puzzle["type"]
+
+    if ptype not in ("cipher", "code_lock", "riddle"):
+        return {"active": True, "correct": False, "wrong_type": True,
+                "puzzle_id": puzzle_id, "step_idx": i}
+
+    correct = False
+    if ptype == "cipher":
+        correct = _normalize(text) == puzzle["answer"].lower()
+    elif ptype == "code_lock":
+        digits = "".join(ch for ch in text if ch.isdigit())
+        correct = digits == puzzle["code"]
+    elif ptype == "riddle":
+        correct = _normalize(text) in [a.lower() for a in puzzle["answers"]]
+
+    if correct:
+        add_progress(user_id, "puzzle", target=puzzle_id, amount=1)
+
+    return {"active": True, "correct": correct, "puzzle_id": puzzle_id, "step_idx": i}
+
+
+def start_sequence_puzzle(user_id: int, puzzle_id: str) -> list[str]:
+    puzzle = PUZZLES[puzzle_id]
+    _set_puzzle_state(user_id, puzzle_id, {"position": 0})
+    return puzzle["sequence"]
+
+
+def format_sequence_keyboard(puzzle_id: str) -> list[tuple[str, str]]:
+    puzzle = PUZZLES[puzzle_id]
+    unique_symbols = list(dict.fromkeys(puzzle["sequence"]))
+    shuffled = unique_symbols[:]
+    random.shuffle(shuffled)
+    return [(sym, f"story_puzzle:{puzzle_id}:tap:{sym}") for sym in shuffled]
+
+
+def check_sequence_tap(user_id: int, puzzle_id: str, tapped_symbol: str) -> dict:
+    puzzle = PUZZLES[puzzle_id]
+    pstate = _get_puzzle_state(user_id, puzzle_id)
+    pos = pstate.get("position", 0)
+    expected = puzzle["sequence"][pos]
+
+    if tapped_symbol != expected:
+        _set_puzzle_state(user_id, puzzle_id, {"position": 0})
+        return {"result": "wrong", "position": 0}
+
+    pos += 1
+    if pos >= len(puzzle["sequence"]):
+        add_progress(user_id, "puzzle", target=puzzle_id, amount=1)
+        _set_puzzle_state(user_id, puzzle_id, {"position": 0})
+        return {"result": "complete"}
+
+    _set_puzzle_state(user_id, puzzle_id, {"position": pos})
+    return {"result": "correct", "position": pos}
+
+
+def start_reaction_puzzle(user_id: int, puzzle_id: str):
+    _set_puzzle_state(user_id, puzzle_id, {"start_ts": time.time()})
+
+
+def check_reaction_tap(user_id: int, puzzle_id: str) -> dict:
+    puzzle = PUZZLES[puzzle_id]
+    pstate = _get_puzzle_state(user_id, puzzle_id)
+    start_ts = pstate.get("start_ts")
+
+    if start_ts is None:
+        return {"result": "not_started"}
+
+    elapsed = time.time() - start_ts
+
+    if elapsed < puzzle["delay_min"]:
+        return {"result": "too_early", "elapsed": elapsed}
+
+    if elapsed > puzzle["delay_max"]:
+        _set_puzzle_state(user_id, puzzle_id, {})
+        return {"result": "too_late", "elapsed": elapsed}
+
+    add_progress(user_id, "puzzle", target=puzzle_id, amount=1)
+    _set_puzzle_state(user_id, puzzle_id, {})
+    return {"result": "success", "elapsed": elapsed}
 
 
 # ============================================================
@@ -158,6 +656,27 @@ def _save(user_id: int, state: dict):
         ),
     )
     conn.commit()
+
+
+# ============================================================
+#  ЛИМИТ УРОВНЯ ПО СЮЖЕТУ
+# ============================================================
+
+def get_completed_chapters(user_id: int) -> int:
+    state = _get_row(user_id)
+    if state["finished"]:
+        return len(CHAPTERS)
+    return state["chapter_idx"]
+
+
+def get_max_level(user_id: int) -> int:
+    completed = get_completed_chapters(user_id)
+    return LEVEL_CAP_BASE + LEVEL_CAP_PER_CHAPTER * completed
+
+
+def is_level_capped(user_id: int) -> bool:
+    player = database.get_or_create_player(user_id, "")
+    return player["level"] >= get_max_level(user_id)
 
 
 # ============================================================
@@ -228,6 +747,8 @@ def add_progress(user_id: int, kind: str, target: str | None = None,
             continue
         if step["type"] == "kill_boss" and kind != "kill_boss":
             continue
+        if step["type"] == "puzzle" and kind != "puzzle":
+            continue
         if step["type"] == "have_item":
             continue
         if step.get("target") is not None and step["target"] != target:
@@ -275,6 +796,8 @@ def check_and_finish(user_id: int) -> dict | None:
 
     for step in chapter["steps"]:
         if step["type"] == "have_item":
+            if step["target"] == "Палец Сукуны":
+                continue
             database.consume_item(user_id, step["target"], step["goal"])
 
     state["chapter_idx"] += 1
@@ -292,6 +815,7 @@ def check_and_finish(user_id: int) -> dict | None:
         "reward_exp": chapter["reward_exp"],
         "leveled": leveled,
         "new_level": new_level,
+        "new_max_level": get_max_level(user_id),
     }
 
 
@@ -307,11 +831,13 @@ def _progress_bar(progress: int, goal: int, width: int = 10) -> str:
 def format_story_screen(user_id: int) -> str:
     state = _get_row(user_id)
     player = database.get_or_create_player(user_id, "")
+    max_level = get_max_level(user_id)
 
     if state["finished"]:
         return (
             "📖 <b>Сюжет</b>\n\n"
             "🏁 <b>Все доступные главы пройдены.</b>\n\n"
+            f"📈 Текущий потолок уровня: <b>{max_level}</b>\n\n"
             "<i>Годжо: «Пока всё. Отдохни, а я подготовлю что-нибудь повеселее.»</i>\n\n"
             "Продолжение следует..."
         )
@@ -347,6 +873,14 @@ def format_story_screen(user_id: int) -> str:
 
     lines.append("")
     lines.append(f"🎁 <b>Награда:</b> 💠 +{chapter['reward_gold']}, 🧬 +{chapter['reward_exp']}")
+
+    if player["level"] >= max_level:
+        lines.append("")
+        lines.append(
+            f"⚠️ <b>Достигнут потолок уровня ({max_level}).</b> "
+            "Пройди эту главу, чтобы качаться дальше."
+        )
+
     return "\n".join(lines)
 
 

@@ -1,5 +1,8 @@
 """
 Магическая Битва: Токио — RPG-бот для Telegram по мотивам Jujutsu Kaisen.
+
+ВРЕМЕННЫЙ обработчик capture_file_id — сборщик file_id для картинок/гифок.
+После сбора всех id его можно удалить (см. пометки в коде).
 """
 import logging
 import time
@@ -535,6 +538,7 @@ async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
                     "Обычная": "_обычная",
                     "Редкая": "_редкая",
                     "Эпическая": "_эпическая",
+                    "Мифическая": "_мифическая",
                     "Легендарная (Особый класс)": "_легендарная",
                 }
                 key = rarity_map.get(t["rarity"])
@@ -854,6 +858,45 @@ async def send_inventory(user_id: int, sender):
             pretty.append(format_loot_line({"name": i["item_name"], "rarity": i["rarity"]}, i["quantity"]))
     await sender("🎒 <b>Инвентарь</b>\n\n" + "\n".join(pretty),
                  reply_markup=inventory_keyboard(user_id))
+
+
+# ---------------------- ВРЕМЕННЫЙ сборщик file_id ----------------------
+# После того как соберёшь все file_id — этот блок можно удалить (и удалить
+# его регистрацию в main()).
+
+async def capture_file_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Принимает фото/гифки/видео и отвечает их file_id.
+    Отправляй боту файл с подписью — подпись станет 'названием'."""
+    msg = update.message
+    if not msg:
+        return
+
+    file_id = None
+    kind = None
+
+    if msg.animation:
+        file_id = msg.animation.file_id
+        kind = "animation"
+    elif msg.photo:
+        file_id = msg.photo[-1].file_id
+        kind = "photo"
+    elif msg.video:
+        file_id = msg.video.file_id
+        kind = "video"
+    elif msg.document:
+        file_id = msg.document.file_id
+        kind = "document"
+
+    if not file_id:
+        return
+
+    caption = msg.caption or "(без подписи)"
+    await msg.reply_text(
+        f"📎 <b>file_id</b> (type: {kind})\n"
+        f"<b>Название:</b> {caption}\n\n"
+        f"<code>{file_id}</code>",
+        parse_mode="HTML",
+    )
 
 
 # ---------------------- Текстовые ответы на головоломки ----------------------
@@ -1947,6 +1990,15 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("inventory", inventory_command))
+
+    # ВРЕМЕННЫЙ обработчик для сбора file_id (фото/гифки/видео).
+    # Удалить, когда все file_id будут собраны.
+    app.add_handler(MessageHandler(
+        (filters.PHOTO | filters.ANIMATION | filters.VIDEO | filters.Document.ALL)
+        & ~filters.COMMAND,
+        capture_file_id,
+    ))
+
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 

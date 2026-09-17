@@ -261,7 +261,7 @@ CHAPTERS = [
                 "type": "puzzle",
                 "target": "seal_sequence",
                 "goal": 1,
-                "hint": "🧩 Повтори порядок печатей барьера",
+                "hint": "🧩 Зажги печати барьера в правильном порядке",
             },
             {
                 "type": "kill_boss",
@@ -383,9 +383,9 @@ PUZZLES = {
         "type": "code_lock",
         "code": "683",
         "clues": [
-            "Первая цифра: 9 минус 3",
-            "Вторая цифра: 2 умножить на 4",
-            "Третья цифра: остаток от деления 15 на 4",
+            "Первая цифра: 9 − 3",
+            "Вторая цифра: 2 × 4",
+            "Третья цифра: 12 разделить на 4",
         ],
         "flavor": "На двери в морг — механический кодовый замок на 3 цифры.",
     },
@@ -402,10 +402,12 @@ PUZZLES = {
     "seal_sequence": {
         "chapter_id": "awakening",
         "type": "sequence",
-        "sequence": ["🔺", "🔵", "⬛", "🔺", "⭐"],
+        "sequence": ["🔵", "🔺", "⭐", "⬛"],
+        "symbols": ["🔺", "🔵", "⬛", "⭐"],
         "flavor": (
-            "Чтобы пройти сквозь временный барьер, нужно повторить порядок "
-            "проклятых печатей, вспыхивающих на его границе."
+            "Чтобы пройти сквозь временный барьер, нужно зажечь проклятые печати "
+            "в правильном порядке. Порядок неизвестен — придётся подбирать. "
+            "Если ошибёшься, все печати гаснут и начинаешь заново."
         ),
     },
     "infinity_riddle": {
@@ -481,7 +483,7 @@ def format_puzzle_prompt(user_id: int) -> str | None:
     found = get_current_puzzle_step(user_id)
     if not found:
         return None
-    _, _, puzzle = found
+    _, puzzle_id, puzzle = found
     ptype = puzzle["type"]
 
     lines = ["🧩 <b>Головоломка</b>", "", puzzle["flavor"], ""]
@@ -505,7 +507,12 @@ def format_puzzle_prompt(user_id: int) -> str | None:
     elif ptype == "reaction":
         lines.append("Нажми кнопку «▶️ Начать», а затем «🛑 Тормоз» точно в нужный момент.")
     elif ptype == "sequence":
-        lines.append("Нажми «▶️ Показать печати», запомни порядок, затем повтори его кнопками.")
+        total = len(puzzle["sequence"])
+        bar = " ".join("⬜" for _ in range(total))
+        lines.append(f"<b>Прогресс:</b> {bar}")
+        lines.append(f"<b>Угадано:</b> 0 из {total}")
+        lines.append("")
+        lines.append("Нажимай печати по одной. Если ошибёшься — все гаснут.")
 
     return "\n".join(lines)
 
@@ -545,10 +552,20 @@ def start_sequence_puzzle(user_id: int, puzzle_id: str) -> list[str]:
 
 def format_sequence_keyboard(puzzle_id: str) -> list[tuple[str, str]]:
     puzzle = PUZZLES[puzzle_id]
-    unique_symbols = list(dict.fromkeys(puzzle["sequence"]))
-    shuffled = unique_symbols[:]
-    random.shuffle(shuffled)
-    return [(sym, f"story_puzzle:{puzzle_id}:tap:{sym}") for sym in shuffled]
+    symbols = puzzle.get("symbols") or list(dict.fromkeys(puzzle["sequence"]))
+    return [(sym, f"story_puzzle:{puzzle_id}:tap:{sym}") for sym in symbols]
+
+
+def format_sequence_progress(puzzle_id: str, position: int) -> str:
+    puzzle = PUZZLES[puzzle_id]
+    seq = puzzle["sequence"]
+    parts = []
+    for i, sym in enumerate(seq):
+        if i < position:
+            parts.append(sym)
+        else:
+            parts.append("⬜")
+    return " ".join(parts)
 
 
 def check_sequence_tap(user_id: int, puzzle_id: str, tapped_symbol: str) -> dict:

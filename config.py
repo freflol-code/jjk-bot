@@ -5,7 +5,7 @@
 """
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8429718072:AAFe1d3evTtCL8saX7FXrUa9dCO1LpuSJvA")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8429718072:AAEx88oIord1HwyX6kijZsh2dvu0AjJp98Q")
 
 DB_PATH = "game.db"
 

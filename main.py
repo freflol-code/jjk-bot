@@ -59,6 +59,17 @@ BUFF_LABELS = {
     "curse_hunt_2": "🧭 +{}% шанс 2-го кл.",
 }
 
+# Короткие коды редкостей для callback_data: Telegram не принимает
+# callback_data длиннее 64 байт, а кириллица в UTF-8 = 2 байта/символ.
+RARITY_SHORT = {
+    "Обычная": "com",
+    "Редкая": "rar",
+    "Эпическая": "epi",
+    "Мифическая": "myth",
+    "Легендарная (Особый класс)": "leg",
+}
+RARITY_FROM_SHORT = {v: k for k, v in RARITY_SHORT.items()}
+
 
 def format_active_buffs(user_id: int) -> str:
     buffs = database.get_active_buffs(user_id)
@@ -212,25 +223,63 @@ def gacha_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def gacha_list_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Меню редкостей вместо полного списка. У игрока может быть 50+ техник,
+    а Telegram ругается на длинные callback_data и большие клавиатуры."""
     learned = database.get_player_techniques(user_id)
-    equipped = set(gacha.get_equipped(user_id))
+    counts = {}
+    for row in learned:
+        t = gacha.get_technique(row["technique_name"])
+        if not t:
+            continue
+        counts[t["rarity"]] = counts.get(t["rarity"], 0) + 1
+
     rows = []
+    for rarity, short in RARITY_SHORT.items():
+        cnt = counts.get(rarity, 0)
+        if cnt == 0:
+            continue
+        em = config.GACHA_RARITY_EMOJI.get(rarity, "")
+        rows.append([InlineKeyboardButton(
+            f"{em} {rarity} ({cnt})",
+            callback_data=f"gacha_rarity:{short}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_back_to_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def gacha_rarity_keyboard(user_id: int, short: str) -> InlineKeyboardMarkup:
+    """Техники одной редкости. Callback содержит короткий индекс, а не имя
+    техники (кириллические имена не влезают в лимит 64 байта callback_data)."""
+    rarity = RARITY_FROM_SHORT.get(short)
+    if not rarity:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_list")],
+        ])
+
+    learned = database.get_player_techniques(user_id)
+    techs = []
     for row in learned:
         name = row["technique_name"]
         t = gacha.get_technique(name)
-        emoji = t["emoji"] if t else "❔"
-        rarity_em = config.GACHA_RARITY_EMOJI.get(t["rarity"], "") if t else ""
+        if t and t["rarity"] == rarity:
+            techs.append(name)
+    techs.sort()
+
+    equipped = set(gacha.get_equipped(user_id))
+    rows = []
+    for i, name in enumerate(techs):
+        t = gacha.get_technique(name)
         if name in equipped:
             rows.append([InlineKeyboardButton(
-                f"✅ {rarity_em} {emoji} {name} (снять)",
-                callback_data=f"gacha_unequip:{name}",
+                f"✅ {t['emoji']} {name} (снять)",
+                callback_data=f"gq:u:{short}:{i}",
             )])
         else:
             rows.append([InlineKeyboardButton(
-                f"{rarity_em} {emoji} {name} (взять в бой)",
-                callback_data=f"gacha_equip:{name}",
+                f"{t['emoji']} {name} (взять)",
+                callback_data=f"gq:e:{short}:{i}",
             )])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_back_to_menu")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_list")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -902,6 +951,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     done: list[dict] = []
 
+    # ================= РЕЙД =================
+
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
             await _render_raid_screen(query, context,
@@ -1043,6 +1094,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         notify_ids = res.get("notify") or []
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
+
+    # ================= ОБЫЧНЫЕ ДЕЙСТВИЯ =================
 
     if data in ("move_left", "move_right"):
         step = -config.MOVE_STEP if data == "move_left" else config.MOVE_STEP
@@ -1548,6 +1601,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await render(query, context, gacha_menu_text(user_id), gacha_list_keyboard(user_id),
                      image_path=image_path)
 
+    elif data.startswith("gacha_rarity:"):
+        short = data.split(":", 1)[1]
+        image_path = None
+        if context.user_data.get("gacha_from") == "shop":
+            image_path = assets.get_npc_image("hakari_shop")
+        await render(query, context, gacha_menu_text(user_id),
+                     gacha_rarity_keyboard(user_id, short), image_path=image_path)
+
     elif data == "gacha_roll1":
         result = gacha.roll_once(user_id)
         if not result["ok"]:
@@ -1577,19 +1638,39 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_menu_keyboard(), image_path=image_path)
 
-    elif data.startswith("gacha_equip:"):
-        name = data.split(":", 1)[1]
-        result = gacha.equip(user_id, name)
+    elif data.startswith("gq:"):
+        parts = data.split(":")
+        if len(parts) != 4:
+            return
+        act, short, idx_str = parts[1], parts[2], parts[3]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            return
+        rarity = RARITY_FROM_SHORT.get(short)
+        if not rarity:
+            await render(query, context, "❌ Неверная редкость.", kb_for(user_id))
+            return
+        learned = database.get_player_techniques(user_id)
+        techs = sorted([
+            r["technique_name"] for r in learned
+            if gacha.get_technique(r["technique_name"])
+            and gacha.get_technique(r["technique_name"])["rarity"] == rarity
+        ])
+        if idx < 0 or idx >= len(techs):
+            await render(query, context,
+                         "❌ Техника не найдена. Открой список заново.",
+                         gacha_list_keyboard(user_id))
+            return
+        name = techs[idx]
+        if act == "e":
+            result = gacha.equip(user_id, name)
+        else:
+            result = gacha.unequip(user_id, name)
         text = ("✅ " if result["ok"] else "❌ ") + result["msg"] + "\n\n" + gacha_menu_text(user_id)
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
-        await render(query, context, text, gacha_list_keyboard(user_id), image_path=image_path)
-
-    elif data.startswith("gacha_unequip:"):
-        name = data.split(":", 1)[1]
-        result = gacha.unequip(user_id, name)
-        text = ("✅ " if result["ok"] else "❌ ") + result["msg"] + "\n\n" + gacha_menu_text(user_id)
-        image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
-        await render(query, context, text, gacha_list_keyboard(user_id), image_path=image_path)
+        await render(query, context, text, gacha_rarity_keyboard(user_id, short),
+                     image_path=image_path)
 
     elif data.startswith("npc:"):
         npc_id = data.split(":", 1)[1]

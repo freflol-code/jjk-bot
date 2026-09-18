@@ -90,6 +90,48 @@ def format_active_buffs(user_id: int) -> str:
     return " | ".join(parts)
 
 
+def _domain_button(user_id: int) -> tuple[str, str]:
+    """Возвращает (текст_кнопки, callback_data) для кнопки домена.
+    Кнопка показывается всегда в бою, состояние разное:
+      - домен активен → «Домен активен (X х.)», cb=noop
+      - домен не разблокирован → «Домен: N/20», cb=domain_info
+      - разблокирован, условие не выполнено → «Условие: X/Y …», cb=domain_info
+      - разблокирован, условие выполнено, 1-й раз → «Использовать домен», cb=domain_activate
+      - разблокирован, условие выполнено, повторно → «Домен (−X% HP)», cb=domain_activate
+    """
+    dk, dt = database.get_domain(user_id)
+    if dk and dt > 0:
+        return (f"🌌 Домен активен ({dt} х.)", "noop")
+
+    technique_name = combat.get_unlocked_domain_technique(user_id)
+    if technique_name:
+        cond = combat.check_activation_condition(user_id)
+        if cond["ok"]:
+            # Проверяем, будет ли это повторная активация
+            uses_before = database.get_domain_uses_in_battle(user_id)
+            penalty = combat._get_reactivation_penalty(uses_before)
+            if penalty > 0:
+                return (f"🌌 Использовать домен (−{int(penalty*100)}% HP)", "domain_activate")
+            return ("🌌 Использовать домен", "domain_activate")
+        return (f"🌌 Условие: {cond['text']}", "domain_info")
+
+    # Домен не разблокирован — показываем максимальный прогресс среди экипированных
+    equipped = gacha.get_equipped(user_id)
+    best = 0
+    has_master = False
+    for name in equipped:
+        t = gacha.get_technique(name)
+        if not t or not t.get("has_domain"):
+            continue
+        has_master = True
+        uses = database.get_technique_uses(user_id, name)
+        if uses > best:
+            best = uses
+    if has_master:
+        return (f"🌌 Домен: {best}/{config.DOMAIN_UNLOCK_USES}", "domain_info")
+    return ("🌌 Домен недоступен", "noop")
+
+
 def _get_current_step_info(user_id: int):
     chapter = story.get_current_chapter(user_id)
     if not chapter:
@@ -152,6 +194,9 @@ def main_keyboard(user_id: int):
                         f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
                         callback_data=f"tech:{i}",
                     )])
+        # Кнопка домена — всегда видна в бою
+        dom_text, dom_cb = _domain_button(user_id)
+        rows.append([InlineKeyboardButton(dom_text, callback_data=dom_cb)])
         rows.append([
             InlineKeyboardButton("🛡 Защита", callback_data="defend"),
             InlineKeyboardButton("🏃 Сбежать", callback_data="flee"),
@@ -1436,6 +1481,87 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         notify_ids = res.get("notify") or []
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
+        return
+
+    # ================= ДОМЕН =================
+
+    if data == "domain_activate":
+        result = combat.activate_domain_manual(user_id)
+        encounter = database.get_encounter(user_id)
+        fresh_player = database.get_or_create_player(user_id, "")
+
+        if not result.get("ok"):
+            if encounter:
+                text = ("❌ " + result["msg"] + "\n\n"
+                        + combat.encounter_status_text(encounter) + "\n\n"
+                        + combat.player_status_text(fresh_player, user_id))
+                image_path = assets.get_monster_image(encounter["monster_name"])
+                await render(query, context, text, kb_for(user_id), image_path=image_path)
+            else:
+                text = "❌ " + result["msg"] + "\n\n" + location_text(user_id, x)
+                await render(query, context, text, kb_for(user_id),
+                             image_path=district_image_for_x(x))
+            return
+
+        log_text = "\n".join(result["log"])
+        if encounter:
+            text = (combat.encounter_status_text(encounter) + "\n\n" + log_text + "\n\n"
+                    + combat.player_status_text(fresh_player, user_id))
+            image_path = assets.get_monster_image(encounter["monster_name"])
+            await render(query, context, text, kb_for(user_id), image_path=image_path)
+        else:
+            text = log_text + "\n\n" + location_text(user_id, x)
+            await render(query, context, text, kb_for(user_id),
+                         image_path=district_image_for_x(x))
+        if result.get("effect"):
+            await send_effect_gif(context, query.message.chat_id, result["effect"])
+        return
+
+    if data == "domain_info":
+        technique_name = combat.get_unlocked_domain_technique(user_id)
+        if technique_name:
+            cond = combat.check_activation_condition(user_id)
+            uses_before = database.get_domain_uses_in_battle(user_id)
+            penalty = combat._get_reactivation_penalty(uses_before)
+
+            lines = [f"{cond['domain_emoji']} <b>{cond['domain_name']}</b>", ""]
+            if cond["ok"]:
+                lines.append(f"✅ Условие активации выполнено: <b>{cond['text']}</b>.")
+                if penalty > 0:
+                    lines.append(
+                        f"⚠️ Сейчас в бою уже активировали {uses_before} раз — "
+                        f"повторное расширение отнимет <b>{int(penalty*100)}% HP</b>."
+                    )
+                else:
+                    lines.append("Нажми кнопку, чтобы активировать домен.")
+            else:
+                lines.append(f"⏳ Условие активации: <b>{cond['text']}</b>")
+                lines.append("")
+                lines.append(
+                    "<i>Выполни условие в этом бою — и кнопка активации заработает.</i>"
+                )
+            await render(query, context, "\n".join(lines), kb_for(user_id))
+        else:
+            equipped = gacha.get_equipped(user_id)
+            lines = ["🌌 <b>Домен ещё не разблокирован</b>", ""]
+            lines.append(
+                f"Используй мастер-технику в бою <b>{config.DOMAIN_UNLOCK_USES} раз</b>, "
+                f"чтобы открыть её домен."
+            )
+            lines.append("")
+            any_master = False
+            for name in equipped:
+                t = gacha.get_technique(name)
+                if not t or not t.get("has_domain"):
+                    continue
+                any_master = True
+                uses = database.get_technique_uses(user_id, name)
+                bar = "▰" * (uses * 10 // config.DOMAIN_UNLOCK_USES) + "▱" * (10 - uses * 10 // config.DOMAIN_UNLOCK_USES)
+                lines.append(f"  {t['emoji']} <b>{name}</b>")
+                lines.append(f"     {bar} {uses}/{config.DOMAIN_UNLOCK_USES}")
+            if not any_master:
+                lines.append("<i>У тебя нет экипированных мастер-техник.</i>")
+            await render(query, context, "\n".join(lines), kb_for(user_id))
         return
 
     # ================= ДВИЖЕНИЕ / ОТДЫХ / ПАТРУЛЬ =================

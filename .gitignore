@@ -1,0 +1,38 @@
+# Секреты
+.env
+*.env
+
+# Локальная база данных и данные
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Логи и временные файлы
+*.log
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Дубликаты файлов (артефакты скачивания из чатов)
+*([0-9]).py
+* ([0-9]).py

@@ -1,11 +1,6 @@
 """
 Пошаговая боевая система «Магическая Битва: Токио».
-
-Учитывает эффекты активного типа ПЭ, клана и Проклятия Небес
-(см. ce_types.py → get_active_effects).
-
-Проклятие Небес Мехамару/Тоджи пересчитывает max HP/ПЭ в момент экипа.
-В бою текущие max_hp/max_ce берутся из БД как есть.
+Учитывает эффекты типа ПЭ, клана и Проклятия Небес.
 """
 import random
 
@@ -96,8 +91,9 @@ def _black_flash_chance(user_id: int) -> float:
 
 
 def _regen_ce(user_id: int, player, mult: float = 1.0):
+    eff = ce_types.get_effective_stats(user_id, player)
     regen = int(_ce_regen_amount(user_id, player) * mult)
-    new_ce = min(player["max_ce"], player["ce"] + regen)
+    new_ce = min(eff["max_ce"], player["ce"] + regen)
     database.update_player_ce(user_id, new_ce)
     return regen
 
@@ -122,14 +118,22 @@ def encounter_status_text(encounter) -> str:
     )
 
 
-def player_status_text(player) -> str:
+def player_status_text(player, user_id: int | None = None) -> str:
+    """Если user_id передан, используются эффективные max_hp/max_ce
+    (с учётом hp_mult/ce_mult от Проклятий Небес)."""
+    if user_id:
+        eff = ce_types.get_effective_stats(user_id, player)
+    else:
+        eff = {"hp": player["hp"], "max_hp": player["max_hp"],
+               "ce": player["ce"], "max_ce": player["max_ce"]}
+
     need = player["level"] * EXP_BASE
     buff_line = ""
     if player["dmg_buff_turns"]:
         buff_line = f" | 🔥 Бафф урона x{player['dmg_buff_mult']:.2f} ({player['dmg_buff_turns']} х.)"
     return (
-        f"❤️ HP: {player['hp']}/{player['max_hp']} | "
-        f"🔵 ПЭ: {player['ce']}/{player['max_ce']}\n"
+        f"❤️ HP: {eff['hp']}/{eff['max_hp']} | "
+        f"🔵 ПЭ: {eff['ce']}/{eff['max_ce']}\n"
         f"💠 {player['gold']} | 🧬 Ур. {player['level']} ({player['exp']}/{need}) | "
         f"🎚 Контроль ПЭ: {player['ce_control']}"
         f"{buff_line}"
@@ -266,6 +270,7 @@ def _victory(user_id: int, encounter, log: list) -> dict:
 
         if leveled:
             quests.add_progress(user_id, "level_up")
+            ce_types.compress_hp_ce(user_id)
             log.append(f"\n🎉 <b>Уровень повышен до {new_level}!</b> HP и ПЭ восстановлены.")
         return {"status": "victory", "log": log, "effect": "boss_victory"}
 
@@ -296,13 +301,15 @@ def _victory(user_id: int, encounter, log: list) -> dict:
 
     if leveled:
         quests.add_progress(user_id, "level_up")
+        ce_types.compress_hp_ce(user_id)
         log.append(f"\n🎉 <b>Уровень повышен до {new_level}!</b> HP и ПЭ восстановлены.")
 
     return {"status": "victory", "log": log, "effect": "victory"}
 
 
 def _death(user_id: int, player, log: list) -> dict:
-    respawn_hp = max(1, player["max_hp"] // 2)
+    eff = ce_types.get_effective_stats(user_id, player)
+    respawn_hp = max(1, eff["max_hp"] // 2)
     database.update_player_hp(user_id, respawn_hp)
     database.clear_encounter(user_id)
     database.update_player_x(user_id, 0)
@@ -369,7 +376,7 @@ def _curse_turn(user_id: int, player, encounter, log: list,
     return None
 
 
-# ---------------- Атака игрока ----------------
+# ---------------- Атака ----------------
 
 def attack(user_id: int, technique_name: str | None = None) -> dict:
     encounter = database.get_encounter(user_id)
@@ -432,15 +439,11 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     if dmg > 0 and technique and technique.get("effect"):
         _apply_effect(user_id, encounter, technique["effect"], log)
 
-    # --- Доп. эффекты типа ПЭ на обычную атаку ---
     if dmg > 0 and not technique:
-        # Стан с шансом
         stun_ch = effects.get("stun_chance", 0.0)
         stun_every2 = effects.get("stun_chance_every_2", 0.0)
         bleed_ch = effects.get("bleed_chance", 0.0)
 
-        # stun_chance_every_2: срабатывает с шансом ×0.5 на каждый удар
-        # (имитация «каждого второго»)
         total_stun = stun_ch + stun_every2 * 0.5
         if total_stun > 0 and random.random() < total_stun:
             database.set_encounter_status(user_id, stun_turns=1)
@@ -452,12 +455,12 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
             log.append("🩸 Проклятие кровоточит 2 х.")
             quests.add_progress(user_id, "bleed_apply")
 
-    # --- Вампиризм ---
     vamp = effects.get("vampire", 0.0)
     if dmg > 0 and vamp > 0:
         healed = int(dmg * vamp)
         if healed > 0:
-            new_hp = min(player["max_hp"], player["hp"] + healed)
+            eff = ce_types.get_effective_stats(user_id, player)
+            new_hp = min(eff["max_hp"], player["hp"] + healed)
             if new_hp > player["hp"]:
                 database.update_player_hp(user_id, new_hp)
                 log.append(f"🩸 Вампиризм: +{new_hp - player['hp']} HP.")
@@ -470,7 +473,6 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     database.update_encounter_hp(user_id, monster_hp)
     encounter = database.get_encounter(user_id)
 
-    # Если игрок использовал технику — монстр бьёт сильнее (tech_vs_self_mult)
     self_mult = effects.get("tech_vs_self_mult", 1.0) if technique else 1.0
 
     death_result = _curse_turn(user_id, player, encounter, log, self_mult=self_mult)
@@ -486,8 +488,6 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
 
     return {"status": "ongoing", "log": log, "effect": effect_key}
 
-
-# ---------------- Защита ----------------
 
 def defend(user_id: int) -> dict:
     encounter = database.get_encounter(user_id)
@@ -518,8 +518,6 @@ def defend(user_id: int) -> dict:
 
     return {"status": "ongoing", "log": log, "effect": "defend"}
 
-
-# ---------------- Побег ----------------
 
 def flee(user_id: int) -> dict:
     encounter = database.get_encounter(user_id)

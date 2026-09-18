@@ -175,6 +175,7 @@ def get_active_effects(user_id: int) -> dict:
         "ce_mult": 1.0,
         "tech_vs_self_mult": 1.0,
         "phys_dmg_div": 1.0,
+        "dodge_chance": 0.0,
     }
 
     sources = []
@@ -206,26 +207,37 @@ def get_active_effects(user_id: int) -> dict:
 # ============================================================
 
 def get_effective_stats(user_id: int, player=None) -> dict:
-    """Возвращает {hp, max_hp, ce, max_ce} с учётом hp_mult / ce_mult."""
+    """Возвращает {hp, max_hp, ce, max_ce} с учётом hp_mult / ce_mult.
+    Если множитель = 0, соответствующий стат = 0 (Тоджи/Маки: ПЭ = 0)."""
     if player is None:
         player = database.get_or_create_player(user_id, "")
     effects = get_active_effects(user_id)
     hp_mult = effects.get("hp_mult", 1.0)
     ce_mult = effects.get("ce_mult", 1.0)
 
-    eff_max_hp = max(1, int(player["max_hp"] * hp_mult))
-    eff_max_ce = max(1, int(player["max_ce"] * ce_mult))
+    if hp_mult <= 0:
+        eff_max_hp = 0
+    else:
+        eff_max_hp = max(1, int(player["max_hp"] * hp_mult))
+
+    if ce_mult <= 0:
+        eff_max_ce = 0
+    else:
+        eff_max_ce = max(1, int(player["max_ce"] * ce_mult))
+
+    eff_hp = min(player["hp"], eff_max_hp) if eff_max_hp > 0 else 0
+    eff_ce = min(player["ce"], eff_max_ce) if eff_max_ce > 0 else 0
 
     return {
         "max_hp": eff_max_hp,
         "max_ce": eff_max_ce,
-        "hp": min(player["hp"], eff_max_hp),
-        "ce": min(player["ce"], eff_max_ce),
+        "hp": eff_hp,
+        "ce": eff_ce,
     }
 
 
 def get_effective_player(user_id: int) -> dict:
-    """dict-обёртка игрока с эффективными hp/ce. Удобно для отображения."""
+    """dict-обёртка игрока с эффективными hp/ce."""
     player = database.get_or_create_player(user_id, "")
     eff = get_effective_stats(user_id, player)
     d = dict(player)
@@ -238,26 +250,50 @@ def get_effective_player(user_id: int) -> dict:
 
 def _rescale_hp_ce_on_switch(user_id: int, old_mult_hp: float, old_mult_ce: float):
     """Пропорционально пересчитывает hp/ce в БД после смены Проклятия Небес.
-    Вызывать ПОСЛЕ того, как активный слот в БД уже изменён."""
+    Корректно обрабатывает случаи old/new mult = 0 (Тоджи/Маки: ПЭ = 0)."""
     player = database.get_or_create_player(user_id, "")
     new_effects = get_active_effects(user_id)
     new_mult_hp = new_effects.get("hp_mult", 1.0)
     new_mult_ce = new_effects.get("ce_mult", 1.0)
 
+    # ---- HP ----
     if old_mult_hp != new_mult_hp:
-        old_eff_max = max(1, int(player["max_hp"] * old_mult_hp))
-        new_eff_max = max(1, int(player["max_hp"] * new_mult_hp))
-        old_eff_hp = min(player["hp"], old_eff_max)
-        new_eff_hp = int(old_eff_hp * new_eff_max / old_eff_max)
-        new_eff_hp = max(1, min(new_eff_hp, new_eff_max))
+        if old_mult_hp <= 0:
+            old_eff_max = 0
+            old_eff_hp = 0
+        else:
+            old_eff_max = max(1, int(player["max_hp"] * old_mult_hp))
+            old_eff_hp = min(player["hp"], old_eff_max)
+
+        if new_mult_hp <= 0:
+            new_eff_hp = 0
+        else:
+            new_eff_max = max(1, int(player["max_hp"] * new_mult_hp))
+            if old_eff_max > 0:
+                new_eff_hp = int(old_eff_hp * new_eff_max / old_eff_max)
+            else:
+                new_eff_hp = new_eff_max
+            new_eff_hp = max(1, min(new_eff_hp, new_eff_max))
         database.update_player_hp(user_id, new_eff_hp)
 
+    # ---- CE ----
     if old_mult_ce != new_mult_ce:
-        old_eff_max = max(1, int(player["max_ce"] * old_mult_ce))
-        new_eff_max = max(1, int(player["max_ce"] * new_mult_ce))
-        old_eff_ce = min(player["ce"], old_eff_max)
-        new_eff_ce = int(old_eff_ce * new_eff_max / old_eff_max)
-        new_eff_ce = max(0, min(new_eff_ce, new_eff_max))
+        if old_mult_ce <= 0:
+            old_eff_max = 0
+            old_eff_ce = 0
+        else:
+            old_eff_max = max(1, int(player["max_ce"] * old_mult_ce))
+            old_eff_ce = min(player["ce"], old_eff_max)
+
+        if new_mult_ce <= 0:
+            new_eff_ce = 0
+        else:
+            new_eff_max = max(1, int(player["max_ce"] * new_mult_ce))
+            if old_eff_max > 0:
+                new_eff_ce = int(old_eff_ce * new_eff_max / old_eff_max)
+            else:
+                new_eff_ce = new_eff_max
+            new_eff_ce = max(0, min(new_eff_ce, new_eff_max))
         database.update_player_ce(user_id, new_eff_ce)
 
 

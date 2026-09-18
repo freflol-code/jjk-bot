@@ -1,13 +1,13 @@
 """
 Логика типов ПЭ, кланов и Проклятий Небес.
 
-- Типы ПЭ: копятся у игрока, можно переключать активный.
-- Кланы и Проклятия Небес: НЕ копятся. Выпало — сразу встало в слот,
-  старое затирается. Крутишь снова — заменяется.
+- Ролл типа ПЭ (по редкости, без Проклятий Небес).
+- Ролл клана: 15% — Проклятие Небес, 10% — обычный клан, 75% — пусто.
+- Выдача, экип, снятие.
 - get_active_effects(user_id) собирает эффекты от активных слотов.
-- get_effective_stats(user_id, player) — max_hp/max_ce с учётом hp_mult/ce_mult
-  от Проклятий Небес.
-- При смене/снятии Проклятия Небес hp/ce пропорционально пересчитываются.
+- get_effective_stats(user_id, player) — эффективные max_hp/max_ce с учётом
+  hp_mult/ce_mult от Проклятий Небес.
+- При смене/снятии Проклятия Небес hp/ce в БД пропорционально пересчитываются.
 """
 import random
 import database
@@ -19,7 +19,7 @@ from ce_types_data import (
 
 
 # ============================================================
-#  ВЫБОРКА ПО РЕДКОСТИ (для типов ПЭ)
+#  ВЫБОРКА ПО РЕДКОСТИ
 # ============================================================
 
 def _pool_by_rarity(rarity: str):
@@ -33,12 +33,10 @@ def _roll_ce_rarity() -> str:
 
 
 # ============================================================
-#  КРУТКА ТИПА ПЭ (типы копятся)
+#  КРУТКА ТИПА ПЭ
 # ============================================================
 
 def roll_ce_type(user_id: int) -> dict:
-    """Типы ПЭ копятся. Если выпал новый — добавляем в коллекцию.
-    Не выпал — kind='duplicate', ничего не меняется."""
     rarity = _roll_ce_rarity()
     key = random.choice(_pool_by_rarity(rarity))
     is_new = database.add_ce_type(user_id, key, rarity)
@@ -54,60 +52,33 @@ def roll_ce_type(user_id: int) -> dict:
 
 
 # ============================================================
-#  КРУТКА КЛАНА (кланы и Проклятия Небес НЕ копятся)
+#  КРУТКА КЛАНА
 # ============================================================
 
 def roll_clan(user_id: int) -> dict:
-    """15% — Проклятие Небес, 10% — обычный клан, 75% — пусто.
-    Выпавшее сразу ставится в единственный слот (заменяет старое)."""
     roll = random.random()
-
-    # 1) Проклятие Небес
     if roll < CLAN_GACHA_HEAVENLY_CHANCE:
-        old_effects = get_active_effects(user_id)
-        old_mult_hp = old_effects.get("hp_mult", 1.0)
-        old_mult_ce = old_effects.get("ce_mult", 1.0)
-
-        old_key = database.get_active_heavenly(user_id)
-        old_name = None
-        if old_key and old_key in HEAVENLY_RESTRICTIONS:
-            old_name = HEAVENLY_RESTRICTIONS[old_key]["name"]
-
         key = random.choice(list(HEAVENLY_RESTRICTIONS.keys()))
-        database.set_active_heavenly(user_id, key)
-        _rescale_hp_ce_on_switch(user_id, old_mult_hp, old_mult_ce)
-
+        is_new = database.add_heavenly_restriction(user_id, key)
         return {
             "ok": True,
-            "kind": "heavenly",
+            "kind": "heavenly" if is_new else "heavenly_duplicate",
             "key": key,
             "name": HEAVENLY_RESTRICTIONS[key]["name"],
             "emoji": HEAVENLY_RESTRICTIONS[key]["emoji"],
             "desc": HEAVENLY_RESTRICTIONS[key]["desc"],
-            "old_name": old_name,
         }
-
-    # 2) Обычный клан
     if roll < CLAN_GACHA_HEAVENLY_CHANCE + CLAN_GACHA_CLAN_CHANCE:
-        old_key = database.get_active_clan(user_id)
-        old_name = None
-        if old_key and old_key in CLANS:
-            old_name = CLANS[old_key]["name"]
-
         key = random.choice(list(CLANS.keys()))
-        database.set_active_clan(user_id, key)
-
+        is_new = database.add_clan(user_id, key)
         return {
             "ok": True,
-            "kind": "clan",
+            "kind": "clan" if is_new else "duplicate",
             "key": key,
             "name": CLANS[key]["name"],
             "emoji": CLANS[key]["emoji"],
             "desc": CLANS[key]["desc"],
-            "old_name": old_name,
         }
-
-    # 3) Пусто
     return {"ok": True, "kind": "empty"}
 
 
@@ -127,8 +98,6 @@ def get_active_heavenly(user_id: int) -> str | None:
     return database.get_active_heavenly(user_id)
 
 
-# --- Типы ПЭ: переключение между выбитыми ---
-
 def set_active_ce_type(user_id: int, key: str) -> dict:
     if key not in CE_TYPES:
         return {"ok": False, "msg": "Такого типа ПЭ не существует."}
@@ -138,16 +107,42 @@ def set_active_ce_type(user_id: int, key: str) -> dict:
     return {"ok": True, "msg": f"✅ Активный тип ПЭ: {CE_TYPES[key]['emoji']} {CE_TYPES[key]['name']}"}
 
 
+def set_active_clan(user_id: int, key: str) -> dict:
+    if key not in CLANS:
+        return {"ok": False, "msg": "Такого клана не существует."}
+    if not database.has_clan(user_id, key):
+        return {"ok": False, "msg": "Этот клан ещё не выбит."}
+    database.set_active_clan(user_id, key)
+    return {"ok": True, "msg": f"✅ Активный клан: {CLANS[key]['emoji']} {CLANS[key]['name']}"}
+
+
+def set_active_heavenly(user_id: int, key: str) -> dict:
+    if key not in HEAVENLY_RESTRICTIONS:
+        return {"ok": False, "msg": "Такого Проклятия Небес не существует."}
+    if not database.has_heavenly_restriction(user_id, key):
+        return {"ok": False, "msg": "Это Проклятие Небес ещё не выбито."}
+
+    old_effects = get_active_effects(user_id)
+    old_mult_hp = old_effects.get("hp_mult", 1.0)
+    old_mult_ce = old_effects.get("ce_mult", 1.0)
+
+    database.set_active_heavenly(user_id, key)
+    _rescale_hp_ce_on_switch(user_id, old_mult_hp, old_mult_ce)
+
+    return {"ok": True, "msg": (
+        f"✅ Активное Проклятие Небес: "
+        f"{HEAVENLY_RESTRICTIONS[key]['emoji']} {HEAVENLY_RESTRICTIONS[key]['name']}"
+    )}
+
+
 def clear_ce_type(user_id: int) -> dict:
     database.clear_active_ce_type(user_id)
     return {"ok": True, "msg": "Активный тип ПЭ снят."}
 
 
-# --- Кланы и Проклятия Небес: только снятие (ставить — через крутку) ---
-
 def clear_clan(user_id: int) -> dict:
     database.clear_active_clan(user_id)
-    return {"ok": True, "msg": "Клан снят."}
+    return {"ok": True, "msg": "Активный клан снят."}
 
 
 def clear_heavenly(user_id: int) -> dict:
@@ -158,7 +153,7 @@ def clear_heavenly(user_id: int) -> dict:
     database.clear_active_heavenly(user_id)
     _rescale_hp_ce_on_switch(user_id, old_mult_hp, old_mult_ce)
 
-    return {"ok": True, "msg": "Проклятие Небес снято."}
+    return {"ok": True, "msg": "Активное Проклятие Небес снято."}
 
 
 # ============================================================
@@ -179,7 +174,7 @@ def get_active_effects(user_id: int) -> dict:
         "hp_mult": 1.0,
         "ce_mult": 1.0,
         "tech_vs_self_mult": 1.0,
-        "phys_taken_div": 1.0,
+        "phys_dmg_div": 1.0,
     }
 
     sources = []
@@ -198,7 +193,7 @@ def get_active_effects(user_id: int) -> dict:
             if k in ("phys_dmg_mult", "tech_dmg_mult", "ce_regen_mult",
                      "defense_mult", "hp_mult", "ce_mult", "tech_vs_self_mult"):
                 result[k] *= v
-            elif k == "phys_taken_div":
+            elif k == "phys_dmg_div":
                 result[k] = max(result[k], v)
             else:
                 result[k] += v
@@ -211,6 +206,7 @@ def get_active_effects(user_id: int) -> dict:
 # ============================================================
 
 def get_effective_stats(user_id: int, player=None) -> dict:
+    """Возвращает {hp, max_hp, ce, max_ce} с учётом hp_mult / ce_mult."""
     if player is None:
         player = database.get_or_create_player(user_id, "")
     effects = get_active_effects(user_id)
@@ -229,6 +225,7 @@ def get_effective_stats(user_id: int, player=None) -> dict:
 
 
 def get_effective_player(user_id: int) -> dict:
+    """dict-обёртка игрока с эффективными hp/ce. Удобно для отображения."""
     player = database.get_or_create_player(user_id, "")
     eff = get_effective_stats(user_id, player)
     d = dict(player)
@@ -240,6 +237,8 @@ def get_effective_player(user_id: int) -> dict:
 
 
 def _rescale_hp_ce_on_switch(user_id: int, old_mult_hp: float, old_mult_ce: float):
+    """Пропорционально пересчитывает hp/ce в БД после смены Проклятия Небес.
+    Вызывать ПОСЛЕ того, как активный слот в БД уже изменён."""
     player = database.get_or_create_player(user_id, "")
     new_effects = get_active_effects(user_id)
     new_mult_hp = new_effects.get("hp_mult", 1.0)
@@ -263,6 +262,7 @@ def _rescale_hp_ce_on_switch(user_id: int, old_mult_hp: float, old_mult_ce: floa
 
 
 def compress_hp_ce(user_id: int):
+    """Обрезает hp/ce в БД до эффективных значений. Вызывать после levelup."""
     player = database.get_or_create_player(user_id, "")
     eff = get_effective_stats(user_id, player)
     if player["hp"] > eff["max_hp"]:
@@ -294,32 +294,39 @@ def format_ce_list(user_id: int) -> str:
     return "\n".join(lines)
 
 
-def format_equipment_list(user_id: int) -> str:
-    """Единый экран снаряжения: текущий клан и текущее Проклятие Небес.
-    Оба — в единственном слоте, заменяются при следующем выпадении."""
-    clan_key = get_active_clan(user_id)
-    heavenly_key = get_active_heavenly(user_id)
+def format_clan_list(user_id: int) -> str:
+    owned = database.get_clans(user_id)
+    active = get_active_clan(user_id)
+    if not owned:
+        return "🩸 <b>Кланы</b>\n\n<i>Пока ничего не выбито.</i>"
 
-    lines = ["🎯 <b>Снаряжение Проклятий</b>", ""]
-
-    if clan_key and clan_key in CLANS:
-        c = CLANS[clan_key]
-        lines.append(f"🩸 <b>Клан:</b> {c['emoji']} {c['name']}")
+    lines = ["🩸 <b>Твои кланы</b>", ""]
+    for row in owned:
+        key = row["clan_key"]
+        c = CLANS.get(key)
+        if not c:
+            continue
+        marker = " 🎯" if key == active else ""
+        lines.append(f"{c['emoji']} <b>{c['name']}</b>{marker}")
         lines.append(f"   <i>{c['desc']}</i>")
-    else:
-        lines.append("🩸 <b>Клан:</b> <i>не выбит</i>")
+        lines.append("")
+    return "\n".join(lines)
 
-    lines.append("")
 
-    if heavenly_key and heavenly_key in HEAVENLY_RESTRICTIONS:
-        h = HEAVENLY_RESTRICTIONS[heavenly_key]
-        lines.append(f"🌠 <b>Проклятие Небес:</b> {h['emoji']} {h['name']}")
+def format_heavenly_list(user_id: int) -> str:
+    owned = database.get_heavenly_restrictions(user_id)
+    active = get_active_heavenly(user_id)
+    if not owned:
+        return "🌠 <b>Проклятия Небес</b>\n\n<i>Пока ничего не выбито.</i>"
+
+    lines = ["🌠 <b>Твои Проклятия Небес</b>", ""]
+    for row in owned:
+        key = row["heavenly_key"]
+        h = HEAVENLY_RESTRICTIONS.get(key)
+        if not h:
+            continue
+        marker = " 🎯" if key == active else ""
+        lines.append(f"{h['emoji']} <b>{h['name']}</b>{marker}")
         lines.append(f"   <i>{h['desc']}</i>")
-    else:
-        lines.append("🌠 <b>Проклятие Небес:</b> <i>не выбито</i>")
-
-    lines.append("")
-    lines.append("<i>Крути гачу — что выпадет, то и встанет в слот. "
-                 "Старое затирается. Снять можно вручную.</i>")
-
+        lines.append("")
     return "\n".join(lines)

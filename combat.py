@@ -65,6 +65,9 @@ def _physical_damage(user_id: int, player) -> int:
 
     effects = ce_types.get_active_effects(user_id)
     dmg = int(dmg * effects.get("phys_dmg_mult", 1.0))
+    div = effects.get("phys_dmg_div", 1.0)
+    if div > 1.0:
+        dmg = max(1, int(dmg / div))
     return dmg
 
 
@@ -119,8 +122,7 @@ def encounter_status_text(encounter) -> str:
 
 
 def player_status_text(player, user_id: int | None = None) -> str:
-    """Если user_id передан, используются эффективные max_hp/max_ce
-    (с учётом hp_mult/ce_mult от Проклятий Небес)."""
+    """Если user_id передан, используются эффективные max_hp/max_ce."""
     if user_id:
         eff = ce_types.get_effective_stats(user_id, player)
     else:
@@ -351,9 +353,8 @@ def _curse_turn(user_id: int, player, encounter, log: list,
 
         effects = ce_types.get_active_effects(user_id)
         defense_mult = effects.get("defense_mult", 1.0)
-        phys_taken_div = effects.get("phys_taken_div", 1.0)
 
-        mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult / phys_taken_div)
+        mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult)
         mdmg = max(1, mdmg)
 
         new_hp = player["hp"] - mdmg
@@ -366,8 +367,6 @@ def _curse_turn(user_id: int, player, encounter, log: list,
             note += f", блок x{damage_mult}"
         if defense_mult < 1.0:
             note += f", ПЭ x{defense_mult:.2f}"
-        if phys_taken_div > 1.0:
-            note += f", ÷{phys_taken_div:.0f} физ"
         if self_mult > 1.0:
             note += f", тех x{self_mult:.2f}"
         note += ")"

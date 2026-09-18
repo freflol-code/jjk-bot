@@ -134,3 +134,28 @@ VIP_PAYLOAD = "vip_30_days"
 # --- Расширения Территории ---
 # Сколько раз нужно использовать мастер-технику, чтобы разблокировать её домен.
 DOMAIN_UNLOCK_USES = 20
+
+# --- Донат (звёзды → 💠) ---
+DONATE_RATE = 3                     # базовый курс: сколько 💠 за 1 ⭐
+DONATE_PAYLOAD_PREFIX = "donate_"   # префикс платежа, чтобы отличать от VIP
+
+# Пакеты с бонусами. currency — итоговое количество 💠 с учётом бонуса.
+# bonus_pct — для отображения игроку («+50% бонус»). base = stars * DONATE_RATE.
+DONATE_PACKAGES = {
+    "small": {
+        "emoji": "🥉", "name": "Малый",
+        "stars": 10, "currency": 30, "bonus_pct": 0,
+    },
+    "medium": {
+        "emoji": "🥈", "name": "Средний",
+        "stars": 50, "currency": 180, "bonus_pct": 20,
+    },
+    "large": {
+        "emoji": "🥇", "name": "Большой",
+        "stars": 150, "currency": 600, "bonus_pct": 33,
+    },
+    "huge": {
+        "emoji": "💎", "name": "Гигантский",
+        "stars": 500, "currency": 2250, "bonus_pct": 50,
+    },
+}

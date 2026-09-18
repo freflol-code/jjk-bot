@@ -2,6 +2,7 @@
 Логика типов ПЭ, кланов и Проклятий Небес.
 
 - Ролл типа ПЭ (по редкости, без Проклятий Небес).
+- Ролл x10 типов ПЭ разом.
 - Ролл клана: 15% — Проклятие Небес, 10% — обычный клан, 75% — пусто.
 - Выдача, экип, снятие.
 - get_active_effects(user_id) собирает эффекты от активных слотов.
@@ -49,6 +50,25 @@ def roll_ce_type(user_id: int) -> dict:
         "emoji": CE_TYPES[key]["emoji"],
         "desc": CE_TYPES[key]["desc"],
     }
+
+
+def roll_ce_type_x10(user_id: int) -> dict:
+    """10 круток типов ПЭ разом. Возвращает список результатов."""
+    results = []
+    for _ in range(10):
+        rarity = _roll_ce_rarity()
+        key = random.choice(_pool_by_rarity(rarity))
+        is_new = database.add_ce_type(user_id, key, rarity)
+        results.append({
+            "ok": True,
+            "kind": "ce" if is_new else "duplicate",
+            "key": key,
+            "rarity": rarity,
+            "name": CE_TYPES[key]["name"],
+            "emoji": CE_TYPES[key]["emoji"],
+            "desc": CE_TYPES[key]["desc"],
+        })
+    return {"ok": True, "results": results}
 
 
 # ============================================================

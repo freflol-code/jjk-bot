@@ -1,6 +1,7 @@
 """
 Пошаговая боевая система «Магическая Битва: Токио».
-Учитывает эффекты типа ПЭ, клана и Проклятия Небес.
+Учитывает эффекты типа ПЭ, клана, Проклятия Небес, Расширений Территории
+и VIP-множителя наград.
 """
 import random
 
@@ -21,6 +22,7 @@ from config import (
 )
 from loot import roll_quantity
 from bosses import BOSSES, is_boss, SUMMON_RECIPES
+from domains_data import DOMAINS
 
 
 CLASS_REWARD_MULT = {
@@ -32,6 +34,228 @@ CLASS_REWARD_MULT = {
 
 DEFEND_DAMAGE_MULT = 0.5
 DEFEND_CE_REGEN_MULT = 2.0
+
+
+# ============================================================
+#  ЭФФЕКТЫ РАСШИРЕНИЙ ТЕРРИТОРИИ (домены)
+# ============================================================
+# Ключ = domain_key из DOMAINS.
+# Поля:
+#   dmg_mult              — множитель урона игрока, пока домен активен
+#   defense_mult          — множитель входящего урона (0.75 = −25%)
+#   dot_dmg               — урон монстру каждый ход домена
+#   dot_growth            — прирост dot_dmg каждый следующий ход
+#   dot_name              — подпись в логе для DoT
+#   heal_per_turn         — сколько HP восстанавливает игроку каждый ход
+#   stun_per_turn_chance  — шанс стана монстра каждый ход
+#   first_turn_stun       — стан монстра при активации домена
+#   enemy_miss_bonus      — доп. шанс промаха монстра
+#   enemy_dmg_mult        — множитель урона монстра (<1 = слабее)
+#   dodge_bonus           — доп. уклонение игрока
+#   summon_rika           — флаг: Рика бьёт каждый ход
+#   rika_dmg              — урон Рики
+#   gamble                — особый: ролл 50/50 при активации
+# ============================================================
+
+DOMAIN_EFFECTS = {
+    "unlimited_void": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "first_turn_stun": 2,
+    },
+    "malevolent_shrine": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "dot_dmg": 40, "dot_name": "🏮 Невидимые лезвия",
+    },
+    "chimera_shadow_garden": {
+        "dmg_mult": 1.25, "defense_mult": 0.70,
+        "dot_dmg": 30, "dot_growth": 15, "dot_name": "🌑 Шикигами-атаки",
+    },
+    "coffin_of_the_iron_mountain": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "dot_dmg": 35, "dot_name": "🔥 Жуки-вулканы",
+    },
+    "self_embodiment_of_perfection": {
+        "dmg_mult": 1.35, "defense_mult": 0.70,
+        "enemy_defense_debuff_per_turn": 0.08,
+    },
+    "deadly_sentencing": {
+        "dmg_mult": 1.25, "defense_mult": 0.75,
+        "enemy_dmg_mult": 0.85,
+    },
+    "idle_death_gamble": {
+        "dmg_mult": 1.80, "defense_mult": 0.75,
+        "gamble": True,
+    },
+    "horizon_of_the_captivating_skandha": {
+        "dmg_mult": 1.20, "defense_mult": 0.80,
+        "enemy_miss_bonus": 0.15,
+    },
+    "authentic_mutual_love": {
+        "dmg_mult": 1.30, "defense_mult": 0.65,
+        "summon_rika": True, "rika_dmg": 50,
+    },
+    "ashen_boundless_reach": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "dot_dmg": 25, "dot_growth": 10, "dot_name": "🔥 Раскалённый пепел",
+    },
+    "hall_of_eternal_eclipse": {
+        "dmg_mult": 1.35, "defense_mult": 0.75,
+        "dot_dmg": 30, "dot_name": "🌕 Лунные клинки",
+    },
+    "hall_of_shattered_mirrors": {
+        "dmg_mult": 1.20, "defense_mult": 0.55,
+        "dodge_bonus": 0.20,
+    },
+    "choir_of_forgotten_voices": {
+        "dmg_mult": 1.25, "defense_mult": 0.75,
+        "enemy_miss_bonus": 0.20,
+    },
+    "hall_of_eternal_winter": {
+        "dmg_mult": 1.25, "defense_mult": 0.75,
+        "stun_per_turn_chance": 0.35,
+    },
+    "heavenly_verdict_of_the_storm": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "dot_dmg": 45, "dot_name": "⛈️ Проклятая молния",
+    },
+    "sanctuary_of_the_unbreakable_pact": {
+        "dmg_mult": 1.50, "defense_mult": 0.75,
+    },
+    "choir_of_eternal_mourning": {
+        "dmg_mult": 1.20, "defense_mult": 0.80,
+        "heal_per_turn": 40,
+    },
+    "lair_of_the_ancient_beast": {
+        "dmg_mult": 1.30, "defense_mult": 0.75,
+        "dot_dmg": 35, "dot_name": "🐾 Атаки древнего зверя",
+    },
+    "fortress_of_eternal_steel": {
+        "dmg_mult": 1.20, "defense_mult": 0.40,
+    },
+}
+
+
+def _find_domain_by_technique(technique_name: str) -> str | None:
+    """Ищет domain_key по имени мастер-техники."""
+    for key, d in DOMAINS.items():
+        if d["technique"] == technique_name:
+            return key
+    return None
+
+
+def _activate_domain(user_id: int, technique_name: str, log: list):
+    """Пытается активировать домен при использовании мастер-техники.
+    Если домен уже активен — не перезаписывает."""
+    technique = gacha.get_technique(technique_name)
+    if not technique or not technique.get("has_domain"):
+        return
+
+    domain_key = _find_domain_by_technique(technique_name)
+    if not domain_key:
+        return
+
+    cur_key, cur_turns = database.get_domain(user_id)
+    if cur_key:
+        cur_data = DOMAINS.get(cur_key)
+        cur_name = cur_data["name"] if cur_data else cur_key
+        log.append(f"⚠️ Домен уже активен: <b>{cur_name}</b> ({cur_turns} х.)")
+        return
+
+    domain_data = DOMAINS[domain_key]
+    effect = DOMAIN_EFFECTS.get(domain_key, {})
+
+    # Особый случай: Игра в Смерть на Досуге — 50/50
+    if effect.get("gamble"):
+        if random.random() < 0.5:
+            database.set_domain(user_id, domain_key, 3)
+            log.append(
+                f"🎰 <b>УДАЧА!</b> {domain_data['emoji']} "
+                f"<b>{domain_data['name']}</b> активирован на 3 хода! +80% урона."
+            )
+        else:
+            database.update_player_ce(user_id, 0)
+            log.append(
+                f"💀 <b>ПРОИГРЫШ!</b> {domain_data['emoji']} "
+                f"<b>{domain_data['name']}</b> обнулил твою ПЭ!"
+            )
+        return
+
+    # Обычная активация
+    database.set_domain(user_id, domain_key, 3)
+    log.append(
+        f"{domain_data['emoji']} <b>Расширение Территории:</b> "
+        f"<b>{domain_data['name']}</b> активировано на 3 хода!"
+    )
+    log.append(f"<i>{domain_data['effect']}</i>")
+
+    # Мгновенный стан при активации
+    if effect.get("first_turn_stun"):
+        database.set_encounter_status(user_id, stun_turns=effect["first_turn_stun"])
+        log.append(f"😵 Проклятие оглушено на {effect['first_turn_stun']} х.!")
+
+
+def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
+    """Обрабатывает эффекты домена в конце хода игрока.
+    Возвращает True, если монстр умер от эффектов домена."""
+    domain_key, turns = database.get_domain(user_id)
+    if not domain_key or turns <= 0:
+        return False
+
+    effect = DOMAIN_EFFECTS.get(domain_key, {})
+    domain_data = DOMAINS.get(domain_key, {})
+    domain_name = domain_data.get("name", domain_key)
+
+    # 1. Рика бьёт (Юта)
+    if effect.get("summon_rika"):
+        rika_dmg = effect.get("rika_dmg", 50)
+        encounter = database.get_encounter(user_id)
+        if encounter and encounter["hp"] > 0:
+            new_hp = max(0, encounter["hp"] - rika_dmg)
+            database.update_encounter_hp(user_id, new_hp)
+            log.append(f"👻 <b>Рика Оримо</b> атакует: {rika_dmg} урона!")
+            if new_hp <= 0:
+                return True
+
+    # 2. DoT от домена
+    if effect.get("dot_dmg"):
+        base_dot = effect["dot_dmg"]
+        growth = effect.get("dot_growth", 0)
+        # Например, домен на 3 хода — 1-й ход базовый, 2-й + growth, 3-й + 2*growth
+        turns_elapsed = 3 - turns
+        dot = base_dot + growth * turns_elapsed
+
+        encounter = database.get_encounter(user_id)
+        if encounter and encounter["hp"] > 0:
+            new_hp = max(0, encounter["hp"] - dot)
+            database.update_encounter_hp(user_id, new_hp)
+            dot_name = effect.get("dot_name", "Эффект домена")
+            log.append(f"{dot_name}: {dot} урона!")
+            if new_hp <= 0:
+                return True
+
+    # 3. Лечение игрока
+    if effect.get("heal_per_turn"):
+        heal = effect["heal_per_turn"]
+        eff = ce_types.get_effective_stats(user_id, player)
+        new_hp = min(eff["max_hp"], player["hp"] + heal)
+        if new_hp > player["hp"]:
+            database.update_player_hp(user_id, new_hp)
+            log.append(f"💚 Домен исцеляет: +{new_hp - player['hp']} HP.")
+
+    # 4. Стан каждый ход
+    if effect.get("stun_per_turn_chance"):
+        if random.random() < effect["stun_per_turn_chance"]:
+            database.set_encounter_status(user_id, stun_turns=1)
+            log.append("❄️ Проклятие сковано льдом домена!")
+
+    # 5. Уменьшаем счётчик ходов
+    new_key, new_turns = database.decrement_domain(user_id)
+    if new_key is None:
+        log.append(f"🌫️ <b>{domain_name}</b> рассеялось.")
+    else:
+        log.append(f"⏳ <b>{domain_name}</b>: осталось {new_turns} х.")
+
+    return False
 
 
 # ---------------- Формулы ----------------
@@ -68,6 +292,13 @@ def _physical_damage(user_id: int, player) -> int:
     div = effects.get("phys_dmg_div", 1.0)
     if div > 1.0:
         dmg = max(1, int(dmg / div))
+
+    # Домен усиливает урон
+    domain_key, domain_turns = database.get_domain(user_id)
+    if domain_key and domain_turns > 0:
+        domain_eff = DOMAIN_EFFECTS.get(domain_key, {})
+        dmg = int(dmg * domain_eff.get("dmg_mult", 1.0))
+
     return dmg
 
 
@@ -83,11 +314,17 @@ def _technique_damage(user_id: int, player, technique: dict) -> int:
 
     effects = ce_types.get_active_effects(user_id)
     dmg = int(dmg * effects.get("tech_dmg_mult", 1.0))
+
+    # Домен усиливает урон
+    domain_key, domain_turns = database.get_domain(user_id)
+    if domain_key and domain_turns > 0:
+        domain_eff = DOMAIN_EFFECTS.get(domain_key, {})
+        dmg = int(dmg * domain_eff.get("dmg_mult", 1.0))
+
     return dmg
 
 
 def _black_flash_chance(user_id: int) -> float:
-    # Крит невозможен без ПЭ — у Тоджи/Маки её нет.
     eff = ce_types.get_effective_stats(user_id)
     if eff["max_ce"] <= 0:
         return 0.0
@@ -100,7 +337,6 @@ def _black_flash_chance(user_id: int) -> float:
 def _regen_ce(user_id: int, player, mult: float = 1.0):
     eff = ce_types.get_effective_stats(user_id, player)
     if eff["max_ce"] <= 0:
-        # Тоджи/Маки — ПЭ нет, реген не работает
         return 0
     regen = int(_ce_regen_amount(user_id, player) * mult)
     new_ce = min(eff["max_ce"], player["ce"] + regen)
@@ -129,7 +365,6 @@ def encounter_status_text(encounter) -> str:
 
 
 def player_status_text(player, user_id: int | None = None) -> str:
-    """Если user_id передан, используются эффективные max_hp/max_ce."""
     if user_id:
         eff = ce_types.get_effective_stats(user_id, player)
     else:
@@ -140,12 +375,22 @@ def player_status_text(player, user_id: int | None = None) -> str:
     buff_line = ""
     if player["dmg_buff_turns"]:
         buff_line = f" | 🔥 Бафф урона x{player['dmg_buff_mult']:.2f} ({player['dmg_buff_turns']} х.)"
+
+    domain_line = ""
+    if user_id:
+        dk, dt = database.get_domain(user_id)
+        if dk and dt > 0:
+            dd = DOMAINS.get(dk)
+            if dd:
+                domain_line = f"\n{dd['emoji']} <b>{dd['name']}</b> ({dt} х.)"
+
     return (
         f"❤️ HP: {eff['hp']}/{eff['max_hp']} | "
         f"🔵 ПЭ: {eff['ce']}/{eff['max_ce']}\n"
         f"💠 {player['gold']} | 🧬 Ур. {player['level']} ({player['exp']}/{need}) | "
         f"🎚 Контроль ПЭ: {player['ce_control']}"
         f"{buff_line}"
+        f"{domain_line}"
     )
 
 
@@ -164,6 +409,8 @@ def _roll_drop(user_id: int, encounter):
         qty = 1
     else:
         qty = roll_quantity(rarity)
+        if database.vip_mult(user_id) > 1.0:
+            qty *= 2
 
     database.add_item(user_id, item_name, rarity, qty)
     emoji = RARITY_EMOJI.get(rarity, "⚪")
@@ -204,6 +451,10 @@ def _story_tracking(user_id: int, encounter, log: list):
             drop = boss.get("drop_item")
             if drop:
                 dn, dr, dq = drop
+                # VIP ×2 к сюжетному трофею. НО: Палец Сукуны — сюжетный
+                # предмет, его всегда ровно 1, VIP не влияет.
+                if dn != "Палец Сукуны" and database.vip_mult(user_id) > 1.0:
+                    dq *= 2
                 database.add_item(user_id, dn, dr, dq)
                 em = RARITY_EMOJI.get(dr, "⚪")
                 log.append(f"\n🎁 Сюжетный трофей: {em} <b>{dn}</b> x{dq}")
@@ -230,7 +481,7 @@ def _victory(user_id: int, encounter, log: list) -> dict:
 
     gold_buff = database.get_buff_value(user_id, "gold_bonus")
     exp_buff = database.get_buff_value(user_id, "exp_bonus")
-    vip_mult = 2.0 if database.has_vip(user_id) else 1.0
+    vip_mult = database.vip_mult(user_id)
 
     from world import get_district_by_id
     from config import LEVEL_SCALE_REWARD_COEF
@@ -271,6 +522,8 @@ def _victory(user_id: int, encounter, log: list) -> dict:
 
         if boss and boss.get("drop_item"):
             dn, dr, dq = boss["drop_item"]
+            if database.vip_mult(user_id) > 1.0:
+                dq *= 2
             database.add_item(user_id, dn, dr, dq)
             em = RARITY_EMOJI.get(dr, "⚪")
             log.append(f"🎁 Трофей: {em} {dn} x{dq} ({dr})")
@@ -351,7 +604,12 @@ def _curse_turn(user_id: int, player, encounter, log: list,
 
     effects = ce_types.get_active_effects(user_id)
     dodge_bonus = effects.get("dodge_chance", 0.0)
-    total_miss = min(0.90, MONSTER_MISS_CHANCE + dodge_bonus)
+
+    # Бонусы от домена
+    domain_key, domain_turns = database.get_domain(user_id)
+    domain_eff = DOMAIN_EFFECTS.get(domain_key, {}) if domain_key and domain_turns > 0 else {}
+    dodge_bonus += domain_eff.get("dodge_bonus", 0.0)
+    total_miss = min(0.90, MONSTER_MISS_CHANCE + dodge_bonus + domain_eff.get("enemy_miss_bonus", 0.0))
 
     if encounter["stun_turns"] > 0:
         log.append(f"😵 {encounter['monster_name']} оглушено и пропускает ход!")
@@ -367,7 +625,12 @@ def _curse_turn(user_id: int, player, encounter, log: list,
 
         defense_mult = effects.get("defense_mult", 1.0)
 
-        mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult)
+        # Множители домена
+        domain_def_mult = domain_eff.get("defense_mult", 1.0)
+        enemy_dmg_mult = domain_eff.get("enemy_dmg_mult", 1.0)
+
+        mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult
+                   * domain_def_mult * enemy_dmg_mult)
         mdmg = max(1, mdmg)
 
         new_hp = player["hp"] - mdmg
@@ -380,6 +643,10 @@ def _curse_turn(user_id: int, player, encounter, log: list,
             note += f", блок x{damage_mult}"
         if defense_mult < 1.0:
             note += f", ПЭ x{defense_mult:.2f}"
+        if domain_def_mult < 1.0:
+            note += f", домен x{domain_def_mult:.2f}"
+        if enemy_dmg_mult < 1.0:
+            note += f", дебафф x{enemy_dmg_mult:.2f}"
         if self_mult > 1.0:
             note += f", тех x{self_mult:.2f}"
         note += ")"
@@ -441,6 +708,8 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     if technique:
         database.update_player_ce(user_id, player["ce"] - technique["ce_cost"])
         quests.add_progress(user_id, "tech_use")
+        # Пытаемся активировать домен
+        _activate_domain(user_id, technique_name, log)
 
     if black_flash:
         if random.random() < BLACK_FLASH_STUN_CHANCE:
@@ -485,6 +754,20 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     database.update_encounter_hp(user_id, monster_hp)
     encounter = database.get_encounter(user_id)
 
+    # Эффекты домена в конце хода игрока
+    domain_killed = _process_domain_turn(user_id, player, encounter, log)
+    if domain_killed:
+        encounter = database.get_encounter(user_id)
+        return _victory(user_id, encounter, log)
+
+    # Перечитываем encounter — DoT мог его изменить
+    encounter = database.get_encounter(user_id)
+    if encounter and encounter["hp"] <= 0:
+        return _victory(user_id, encounter, log)
+
+    if not encounter:
+        return {"status": "victory", "log": log, "effect": "victory"}
+
     self_mult = effects.get("tech_vs_self_mult", 1.0) if technique else 1.0
 
     death_result = _curse_turn(user_id, player, encounter, log, self_mult=self_mult)
@@ -519,6 +802,16 @@ def defend(user_id: int) -> dict:
                                damage_mult=DEFEND_DAMAGE_MULT)
     if death_result:
         return death_result
+
+    encounter = database.get_encounter(user_id)
+    if encounter and encounter["hp"] <= 0:
+        return _victory(user_id, encounter, log)
+
+    # Эффекты домена в конце хода
+    domain_killed = _process_domain_turn(user_id, player, encounter, log)
+    if domain_killed:
+        encounter = database.get_encounter(user_id)
+        return _victory(user_id, encounter, log)
 
     encounter = database.get_encounter(user_id)
     if encounter and encounter["hp"] <= 0:

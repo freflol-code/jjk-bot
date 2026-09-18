@@ -18,6 +18,8 @@ gacha.py, consumables.py, bosses.py) вызывает:
 Бонус: когда игрок забирает ВСЕ недельные задания — ему один раз за неделю
 выдаётся «📜 Свиток опыта Годжо» (+500 опыта, см. consumables.py).
 
+VIP: даёт ×2 к золоту и опыту за задания (ежедневные и еженедельные).
+
 Используемые теги (target в скобках):
     patrol_start                       — старт боя через Патрулирование
     kill            (класс проклятия)  — победа над проклятием
@@ -685,7 +687,7 @@ def add_progress(user_id: int, tag: str, target: str | None = None,
 
 
 def claim(user_id: int, period: str, quest_id: str) -> dict:
-    """Забрать награду за выполненное задание."""
+    """Забрать награду за выполненное задание. VIP даёт ×2 к золоту и опыту."""
     ensure_quests(user_id)
     conn = database.get_conn()
     cur = conn.cursor()
@@ -706,8 +708,12 @@ def claim(user_id: int, period: str, quest_id: str) -> dict:
     if row["claimed"]:
         return {"ok": False, "msg": "Награда уже получена."}
 
-    database.add_gold(user_id, q["reward_gold"])
-    new_level, leveled = database.add_exp_and_level(user_id, q["reward_exp"])
+    vip = database.vip_mult(user_id)
+    gold = int(q["reward_gold"] * vip)
+    exp = int(q["reward_exp"] * vip)
+
+    database.add_gold(user_id, gold)
+    new_level, leveled = database.add_exp_and_level(user_id, exp)
     conn.execute(
         "UPDATE player_quests SET claimed = 1 "
         "WHERE user_id = ? AND period = ? AND period_key = ? AND quest_id = ?",
@@ -718,7 +724,9 @@ def claim(user_id: int, period: str, quest_id: str) -> dict:
     # проверяем бонус за все недельные задания
     bonus = _maybe_give_weekly_bonus(user_id) if period == "weekly" else None
 
-    msg = f"✅ Награда получена: 💠 +{q['reward_gold']}, 🧬 +{q['reward_exp']}"
+    msg = f"✅ Награда получена: 💠 +{gold}, 🧬 +{exp}"
+    if vip > 1.0:
+        msg += " 💎 (VIP ×2)"
     if bonus:
         msg += f"\n\n🎁 <b>Все недельные задания закрыты!</b>\nТы получаешь {bonus} (+500 опыта)."
     if leveled:
@@ -727,7 +735,8 @@ def claim(user_id: int, period: str, quest_id: str) -> dict:
 
 
 def claim_all_ready(user_id: int, period: str) -> dict:
-    """Забрать все выполненные и незабранные награды периода разом."""
+    """Забрать все выполненные и незабранные награды периода разом. VIP ×2."""
+    vip = database.vip_mult(user_id)
     total_gold = 0
     total_exp = 0
     count = 0
@@ -737,8 +746,8 @@ def claim_all_ready(user_id: int, period: str) -> dict:
             continue
         res = claim(user_id, period, q["id"])
         if res["ok"]:
-            total_gold += q["reward_gold"]
-            total_exp += q["reward_exp"]
+            total_gold += int(q["reward_gold"] * vip)
+            total_exp += int(q["reward_exp"] * vip)
             count += 1
             if res.get("leveled"):
                 leveled_to = res["new_level"]
@@ -748,6 +757,8 @@ def claim_all_ready(user_id: int, period: str) -> dict:
     bonus = _maybe_give_weekly_bonus(user_id) if period == "weekly" else None
 
     msg = f"✅ Забрано заданий: {count}\n💠 +{total_gold}, 🧬 +{total_exp}"
+    if vip > 1.0:
+        msg += " 💎 (VIP ×2)"
     if bonus:
         msg += f"\n\n🎁 <b>Все недельные задания закрыты!</b>\nТы получаешь {bonus} (+500 опыта)."
     if leveled_to:

@@ -883,18 +883,6 @@ def format_story_screen(user_id: int) -> str:
     lines.append(f"🎁 <b>Награда:</b> 💠 +{chapter['reward_gold']}, 🧬 +{chapter['reward_exp']}")
     lines.append("<i>💎 VIP-игроки получают ×2 к награде за главу</i>")
 
-    # Инфо о боссе
-    temp = chapter.get("temp_district")
-    if temp and temp.get("boss"):
-        b = temp["boss"]
-        lines.append("")
-        lines.append(f"⚠️ <b>Хранитель:</b> {b['emoji']} {b['name']}")
-        lines.append(
-            f"   ❤️ {b['hp']} HP · 🗡 {b['dmg_min']}–{b['dmg_max']} · "
-            f"🛡 -{int(b.get('defense', 0) * 100)}% урона"
-        )
-        lines.append("   <i>У босса есть пассивка, скиллы и добивание при низком HP.</i>")
-
     if player["level"] >= max_level:
         lines.append("")
         lines.append(

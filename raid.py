@@ -11,6 +11,7 @@ raid.py — рейды на Сукуну для 1-5 игроков.
 - Бой: пошаговый. Каждый живой игрок делает по одной атаке — обычной
   или врождённой техникой (если хватает ПЭ). Затем Сукуна отвечает.
 - Сукуна может критовать.
+- VIP даёт ×2 к золоту, опыту и дропу с рейда.
 - Победа/поражение заканчивают рейд, все возвращаются в школу (X=0).
 """
 import json
@@ -513,14 +514,21 @@ def _send_all_to_school(raid_id: int):
 
 
 def _finish_victory(raid: dict) -> dict:
+    """Награда каждому выжившему. VIP даёт ×2 к золоту, опыту и дропу.
+    Пальцев Сукуны в дропе рейда нет — их выдают только сюжетные боссы."""
     phase = SUKUNA_PHASES[raid["fingers"]]
     parts = get_participants(raid["id"])
     survivors = [p for p in parts if p["alive"]]
 
     for p in survivors:
-        database.add_gold(p["user_id"], phase["reward_gold"])
-        database.add_exp_and_level(p["user_id"], phase["reward_exp"])
+        vip = database.vip_mult(p["user_id"])
+        gold = int(phase["reward_gold"] * vip)
+        exp = int(phase["reward_exp"] * vip)
+        database.add_gold(p["user_id"], gold)
+        database.add_exp_and_level(p["user_id"], exp)
         dn, dr, dq = phase["drop"]
+        if vip > 1.0:
+            dq *= 2
         database.add_item(p["user_id"], dn, dr, dq)
 
     raid["log"].append("🏆 <b>Сукуна изгнан! Победа!</b>")
@@ -576,7 +584,8 @@ def format_lobby(raid_id: int) -> str:
     for p in parts:
         nick = database.get_or_create_player(p["user_id"], "")["username"] or f"Игрок {p['user_id']}"
         creator_mark = " 👑" if p["user_id"] == raid["creator_id"] else ""
-        lines.append(f"• {nick}{creator_mark} — ❤️ {p['hp']}/{p['max_hp']}")
+        vip_mark = " 💎" if database.has_vip(p["user_id"]) else ""
+        lines.append(f"• {nick}{creator_mark}{vip_mark} — ❤️ {p['hp']}/{p['max_hp']}")
     lines.append("")
     lines.append("<i>Создатель жмёт «▶️ Начать бой». Все пальцы участников уйдут в КД на 12 часов.</i>")
     lines.append("<i>Скинь друзьям ссылку-приглашение кнопкой ниже 👇</i>")
@@ -605,7 +614,8 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
         w = get_equipped(viewer_id)
         weapon_txt = f"{w['emoji']} {w['name']}" if w else "нет"
         alive_txt = "жив" if viewer["alive"] else "💀 выбыл"
-        lines.append("👤 <b>Ты</b>")
+        vip_txt = " 💎" if database.has_vip(viewer_id) else ""
+        lines.append(f"👤 <b>Ты</b>{vip_txt}")
         lines.append(f"   ❤️ HP: {viewer['hp']}/{viewer['max_hp']} | "
                      f"🔵 ПЭ: {vp['ce']}/{vp['max_ce']} | 🧬 Ур. {vp['level']} | {alive_txt}")
         lines.append(f"   ⚔️ Оружие: {weapon_txt}")
@@ -614,6 +624,7 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
     lines.append("<b>Отряд:</b>")
     for p in parts:
         nick = database.get_or_create_player(p["user_id"], "")["username"] or f"Игрок {p['user_id']}"
+        vip_mark = " 💎" if database.has_vip(p["user_id"]) else ""
         if not p["alive"]:
             marker = "💀"
         elif p["user_id"] == cur_id:
@@ -622,7 +633,7 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
             marker = "👤"
         else:
             marker = "❤️"
-        lines.append(f"{marker} {nick}: {p['hp']}/{p['max_hp']}")
+        lines.append(f"{marker} {nick}{vip_mark}: {p['hp']}/{p['max_hp']}")
 
     lines.append("")
     if cur_id:
@@ -650,9 +661,11 @@ def format_finished(raid_id: int) -> str:
     lines = ["🏁 <b>Рейд завершён</b>", ""]
     lines.extend(raid["log"][-10:])
     lines.append("")
-    lines.append(f"💠 Награда каждому выжившему: {phase['reward_gold']}")
+    lines.append(f"💠 Базовая награда выжившему: {phase['reward_gold']}")
     lines.append(f"🧬 Опыт: {phase['reward_exp']}")
     lines.append(f"🎁 Дроп: {phase['drop'][0]}")
+    lines.append("")
+    lines.append("💎 <b>VIP-игроки получают ×2</b> к золоту, опыту и дропу.")
     lines.append("")
     lines.append("<i>Все участники возвращаются в Токийскую школу магии.</i>")
     return "\n".join(lines)

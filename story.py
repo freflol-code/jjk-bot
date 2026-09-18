@@ -1,19 +1,12 @@
 """
 story.py — сюжетные главы «Магической Битвы: Токио».
 
-Система похожа на quests.py, но работает с крупными линейными главами.
-Игрок проходит их по одной, каждая открывает следующую.
-
-Каждая глава имеет min_level — минимальный уровень игрока, чтобы начать.
-Если уровень недостаточен — кнопка «Отправиться» в меню сюжета заблокирована.
-
-HP мобов и боссов в temp-локациях ослаблены на 25% относительно базового баланса.
-
-VIP: даёт ×2 к золоту и опыту за завершение главы.
-
-ОГРАНИЧЕНИЕ УРОВНЯ:
-Пока игрок не прошёл Главу 1, его уровень не может подняться выше 20.
-За каждую пройденную главу потолок увеличивается на 20.
+Боссы глав усилены:
+- HP +20%
+- Урон +35–40% (кроме Хранителя Пальца из главы 2 — он новичковый)
+- Броня (defense) 20–40%, режет получаемый урон
+- Уникальные пассивки и скиллы (см. BOSS_SKILLS)
+- Execute-скилл: добивает игрока при низком HP
 """
 import json
 import random
@@ -23,6 +16,80 @@ import database
 
 LEVEL_CAP_BASE = 20
 LEVEL_CAP_PER_CHAPTER = 20
+
+
+# ============================================================
+#  БОССОВЫЕ СКИЛЛЫ И ПАССИВКИ
+# ============================================================
+# passive:  срабатывает каждый ход босса с указанным шансом (если ход не пропущен).
+# skills:   список активных скиллов, каждый роллится отдельно.
+# execute:  срабатывает, если HP игрока ниже hp_threshold (гарантированно).
+# ============================================================
+
+BOSS_SKILLS = {
+    "Хранитель Пальца (Особый класс)": {
+        "passive": {
+            "type": "extra_dmg", "chance": 0.25,
+            "name": "👁 Взгляд из тьмы", "dmg": 12,
+        },
+        "skills": [
+            {"name": "🕯️ Ритуал Тьмы", "chance": 0.20, "dmg_mult": 1.5},
+        ],
+        "execute": {
+            "name": "💀 Поглощение", "hp_threshold": 0.20, "dmg_mult": 2.5,
+        },
+    },
+    "Медсестра-Смерть (Особый класс)": {
+        "passive": {
+            "type": "drain_ce", "chance": 0.35,
+            "name": "💉 Забор ПЭ", "amount": 8,
+        },
+        "skills": [
+            {"name": "🔪 Скальпель Смерти", "chance": 0.25, "dmg_mult": 1.6},
+            {"name": "⚰️ Погребальный Хор", "chance": 0.15, "dmg_mult": 1.8, "stun_player": True},
+        ],
+        "execute": {
+            "name": "💀 Остановка сердца", "hp_threshold": 0.25, "dmg_mult": 3.0,
+        },
+    },
+    "Пожиратель Тоннелей (Особый класс)": {
+        "passive": {
+            "type": "double_attack", "chance": 0.25,
+        },
+        "skills": [
+            {"name": "🌊 Прилив Тоннеля", "chance": 0.25, "dmg_mult": 1.5},
+            {"name": "🕳️ Затягивание", "chance": 0.15, "dmg_mult": 2.0, "stun_player": True},
+        ],
+        "execute": {
+            "name": "💀 Утопление", "hp_threshold": 0.28, "dmg_mult": 2.8,
+        },
+    },
+    "Сукуна (3 пальца) (Особый класс)": {
+        "passive": {
+            "type": "rage", "chance": 0.30,
+        },
+        "skills": [
+            {"name": "⚔️ Рассечение", "chance": 0.25, "dmg_mult": 1.6},
+            {"name": "🏮 Злая Святыня", "chance": 0.15, "dmg_mult": 2.2},
+        ],
+        "execute": {
+            "name": "💀 Демон Внутри", "hp_threshold": 0.30, "dmg_mult": 3.2,
+        },
+    },
+    "Махито (Особый класс)": {
+        "passive": {
+            "type": "bleed", "chance": 0.35,
+            "name": "🩸 Искажение плоти", "dmg": 20, "turns": 2,
+        },
+        "skills": [
+            {"name": "🎭 Трансформация душ", "chance": 0.25, "dmg_mult": 1.7},
+            {"name": "👐 Коснуться сердцу", "chance": 0.15, "dmg_mult": 2.4},
+        ],
+        "execute": {
+            "name": "💀 Идеальная форма", "hp_threshold": 0.32, "dmg_mult": 3.5,
+        },
+    },
+}
 
 
 CHAPTERS = [
@@ -82,8 +149,9 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Хранитель Пальца (Особый класс)",
-                "hp": 675,
+                "hp": 810,
                 "dmg_min": 24, "dmg_max": 34,
+                "defense": 0.20,
                 "emoji": "👁️‍🗨️",
                 "reward_gold": 400,
                 "reward_exp": 300,
@@ -126,8 +194,9 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Медсестра-Смерть (Особый класс)",
-                "hp": 880,
-                "dmg_min": 31, "dmg_max": 43,
+                "hp": 1056,
+                "dmg_min": 42, "dmg_max": 58,
+                "defense": 0.25,
                 "emoji": "💀",
                 "reward_gold": 500,
                 "reward_exp": 400,
@@ -170,8 +239,9 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Пожиратель Тоннелей (Особый класс)",
-                "hp": 950,
-                "dmg_min": 29, "dmg_max": 42,
+                "hp": 1140,
+                "dmg_min": 39, "dmg_max": 57,
+                "defense": 0.28,
                 "emoji": "🕳️",
                 "reward_gold": 600,
                 "reward_exp": 480,
@@ -214,8 +284,9 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Сукуна (3 пальца) (Особый класс)",
-                "hp": 1500,
-                "dmg_min": 35, "dmg_max": 49,
+                "hp": 1800,
+                "dmg_min": 47, "dmg_max": 66,
+                "defense": 0.32,
                 "emoji": "👺",
                 "reward_gold": 800,
                 "reward_exp": 650,
@@ -265,8 +336,9 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Махито (Особый класс)",
-                "hp": 1400,
-                "dmg_min": 35, "dmg_max": 48,
+                "hp": 1680,
+                "dmg_min": 49, "dmg_max": 67,
+                "defense": 0.35,
                 "emoji": "🎭",
                 "reward_gold": 1000,
                 "reward_exp": 800,
@@ -343,7 +415,6 @@ PUZZLES = {
     },
 }
 
-# ВАЖНО: буква Ё включена, чтобы сдвиг Цезаря считался правильно.
 RU_ALPHABET = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
 
 
@@ -712,10 +783,6 @@ def _check_have_item_steps(user_id: int, chapter: dict, progress: dict) -> dict:
 
 
 def check_and_finish(user_id: int) -> dict | None:
-    """Проверяет выполнение всех шагов главы.
-    VIP даёт ×2 к золоту и опыту за главу.
-    Пальцы Сукуны и другие have_item не удваиваются — они просто
-    проверяются на наличие, а не выдаются через эту функцию."""
     chapter = get_current_chapter(user_id)
     if not chapter:
         return None
@@ -810,6 +877,18 @@ def format_story_screen(user_id: int) -> str:
     lines.append("")
     lines.append(f"🎁 <b>Награда:</b> 💠 +{chapter['reward_gold']}, 🧬 +{chapter['reward_exp']}")
     lines.append("<i>💎 VIP-игроки получают ×2 к награде за главу</i>")
+
+    # Инфо о боссе
+    temp = chapter.get("temp_district")
+    if temp and temp.get("boss"):
+        b = temp["boss"]
+        lines.append("")
+        lines.append(f"⚠️ <b>Хранитель:</b> {b['emoji']} {b['name']}")
+        lines.append(
+            f"   ❤️ {b['hp']} HP · 🗡 {b['dmg_min']}–{b['dmg_max']} · "
+            f"🛡 -{int(b.get('defense', 0) * 100)}% урона"
+        )
+        lines.append("   <i>У босса есть пассивка, скиллы и добивание при низком HP.</i>")
 
     if player["level"] >= max_level:
         lines.append("")

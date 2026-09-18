@@ -815,7 +815,14 @@ def gacha_menu_text(user_id: int) -> str:
     for name in equipped:
         t = gacha.get_technique(name)
         if t:
-            eq_lines.append(f"  {t['emoji']} <b>{name}</b> — {t['ce_cost']}🔵, {t['dmg_min']}-{t['dmg_max']} урона")
+            line = f"  {t['emoji']} <b>{name}</b> — {t['ce_cost']}🔵, {t['dmg_min']}-{t['dmg_max']} урона"
+            if t.get("has_domain"):
+                uses = database.get_technique_uses(user_id, name)
+                if uses >= config.DOMAIN_UNLOCK_USES:
+                    line += "\n     🌌 Домен: <b>разблокирован</b>"
+                else:
+                    line += f"\n     🌀 Домен: {uses}/{config.DOMAIN_UNLOCK_USES}"
+            eq_lines.append(line)
     eq_text = "\n".join(eq_lines) if eq_lines else "  <i>пусто</i>"
 
     rates = "\n".join(

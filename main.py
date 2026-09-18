@@ -364,7 +364,7 @@ def gacha_ce_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 callback_data="gacha_ce_roll1",
             ),
             InlineKeyboardButton(
-                f"🎰 10 круток ({CE_GACHA_ROLL_COST_X10}💠 −20%)",
+                f"🎰 10 круток ({CE_GACHA_ROLL_COST_X10}💠)",
                 callback_data="gacha_ce_roll10",
             ),
         ],
@@ -905,7 +905,6 @@ def gacha_ce_menu_text(user_id: int) -> str:
         "  ⚪ Обычная — 68%\n"
         "  🟣 Эпическая — 26%\n"
         "  🟠 Легендарная — 6%\n\n"
-        "🎁 <b>10 круток — со скидкой 20%!</b>\n\n"
         "<i>Хакари: «Каждому своя энергия. Некоторым — вообще никакой.»</i>"
     )
 
@@ -1341,11 +1340,9 @@ def _donate_description_text(user_id: int) -> str:
 def donate_menu_keyboard() -> InlineKeyboardMarkup:
     rows = []
     for key, pkg in DONATE_PACKAGES.items():
-        bonus = pkg.get("bonus_pct", 0)
-        bonus_txt = f" +{bonus}%" if bonus > 0 else ""
         best = " ⭐" if key == "huge" else ""
         rows.append([InlineKeyboardButton(
-            f"{pkg['emoji']} {pkg['name']}: {pkg['currency']}💠 за {pkg['stars']}⭐{bonus_txt}{best}",
+            f"{pkg['emoji']} {pkg['name']}: {pkg['currency']}💠 за {pkg['stars']}⭐{best}",
             callback_data=f"donate_buy:{key}",
         )])
     rows.append([InlineKeyboardButton("⬅️ Назад в профиль", callback_data="profile_menu")])

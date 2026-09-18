@@ -1,11 +1,20 @@
 """
 Конфигурация бота «Магическая Битва: Токио» (Jujutsu Kaisen RPG).
-Впиши свой токен от @BotFather в переменную BOT_TOKEN
-или задай переменную окружения BOT_TOKEN перед запуском.
+
+Токен BOT_TOKEN передаётся через переменные окружения хостинга
+(Bothost задаёт его автоматически). Локально можно задать вручную:
+    Windows (cmd):     set BOT_TOKEN=ваш_токен
+    Linux/macOS:       export BOT_TOKEN=ваш_токен
 """
 import os
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8429718072:AAEx88oIord1HwyX6kijZsh2dvu0AjJp98Q")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise ValueError(
+        "BOT_TOKEN не задан. На Bothost добавь переменную окружения "
+        "BOT_TOKEN в панели управления. Локально задай её через "
+        "set BOT_TOKEN=... (Windows) или export BOT_TOKEN=... (Linux/macOS)."
+    )
 
 DB_PATH = "data/game.db"
 

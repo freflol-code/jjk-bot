@@ -34,10 +34,13 @@ import leaderboard
 import story
 import raid
 import ce_types
-from config import VIP_PRICE_STARS, VIP_DURATION_DAYS, VIP_PAYLOAD
+from config import (
+    VIP_PRICE_STARS, VIP_DURATION_DAYS, VIP_PAYLOAD,
+    DONATE_RATE, DONATE_PAYLOAD_PREFIX, DONATE_PACKAGES,
+)
 from ce_types_data import (
     CE_TYPES, CLANS, HEAVENLY_RESTRICTIONS,
-    CE_GACHA_ROLL_COST, CLAN_GACHA_ROLL_COST,
+    CE_GACHA_ROLL_COST, CE_GACHA_ROLL_COST_X10, CLAN_GACHA_ROLL_COST,
 )
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
@@ -355,10 +358,16 @@ def gacha_clan_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 def gacha_ce_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = [
-        [InlineKeyboardButton(
-            f"🎰 Крутка типа ПЭ ({CE_GACHA_ROLL_COST}💠)",
-            callback_data="gacha_ce_roll1",
-        )],
+        [
+            InlineKeyboardButton(
+                f"🎰 1 крутка ({CE_GACHA_ROLL_COST}💠)",
+                callback_data="gacha_ce_roll1",
+            ),
+            InlineKeyboardButton(
+                f"🎰 10 круток ({CE_GACHA_ROLL_COST_X10}💠 −20%)",
+                callback_data="gacha_ce_roll10",
+            ),
+        ],
         [InlineKeyboardButton("📖 Мои типы ПЭ", callback_data="gacha_my_ce")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_hub")],
     ]
@@ -615,15 +624,13 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     if database.has_vip(user_id):
         until = database.get_vip_until(user_id)
         days_left = (until - int(time.time())) // 86400
-        rows.append([InlineKeyboardButton(
-            f"💎 VIP активен ({days_left} дн.)",
-            callback_data="vip_info",
-        )])
+        vip_label = f"💎 VIP ({days_left} дн.)"
     else:
-        rows.append([InlineKeyboardButton(
-            "💎 VIP — узнать подробнее",
-            callback_data="vip_info",
-        )])
+        vip_label = "💎 VIP"
+    rows.append([
+        InlineKeyboardButton(vip_label, callback_data="vip_info"),
+        InlineKeyboardButton("💰 Донат", callback_data="donate_menu"),
+    ])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
     return InlineKeyboardMarkup(rows)
 
@@ -898,6 +905,7 @@ def gacha_ce_menu_text(user_id: int) -> str:
         "  ⚪ Обычная — 68%\n"
         "  🟣 Эпическая — 26%\n"
         "  🟠 Легендарная — 6%\n\n"
+        "🎁 <b>10 круток — со скидкой 20%!</b>\n\n"
         "<i>Хакари: «Каждому своя энергия. Некоторым — вообще никакой.»</i>"
     )
 
@@ -1233,7 +1241,8 @@ async def vip_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.pre_checkout_query
-    if query.invoice_payload == VIP_PAYLOAD:
+    payload = query.invoice_payload
+    if payload == VIP_PAYLOAD or payload.startswith(DONATE_PAYLOAD_PREFIX):
         await query.answer(ok=True)
     else:
         await query.answer(ok=False, error_message="Неизвестный платёж")
@@ -1244,19 +1253,42 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     if not msg or not msg.successful_payment:
         return
     payment = msg.successful_payment
-    if payment.invoice_payload != VIP_PAYLOAD:
-        return
+    payload = payment.invoice_payload
     user_id = msg.from_user.id
-    database.add_vip_days(user_id, VIP_DURATION_DAYS)
-    until = database.get_vip_until(user_id)
-    days_left = (until - int(time.time())) // 86400
-    await msg.reply_html(
-        f"💎 <b>VIP активирован!</b>\n\n"
-        f"Срок: {VIP_DURATION_DAYS} дней (осталось {days_left}).\n"
-        f"Награды с боёв теперь ×2.\n\n"
-        f"<i>Спасибо за поддержку!</i>",
-        reply_markup=kb_for(user_id),
-    )
+
+    # --- VIP ---
+    if payload == VIP_PAYLOAD:
+        database.add_vip_days(user_id, VIP_DURATION_DAYS)
+        until = database.get_vip_until(user_id)
+        days_left = (until - int(time.time())) // 86400
+        await msg.reply_html(
+            f"💎 <b>VIP активирован!</b>\n\n"
+            f"Срок: {VIP_DURATION_DAYS} дней (осталось {days_left}).\n"
+            f"Награды с боёв теперь ×2.\n\n"
+            f"<i>Спасибо за поддержку!</i>",
+            reply_markup=kb_for(user_id),
+        )
+        return
+
+    # --- Донат (💠 за звёзды) ---
+    if payload.startswith(DONATE_PAYLOAD_PREFIX):
+        key = payload[len(DONATE_PAYLOAD_PREFIX):]
+        pkg = DONATE_PACKAGES.get(key)
+        if not pkg:
+            return
+        database.add_gold(user_id, pkg["currency"])
+        player = database.get_or_create_player(user_id, "")
+        bonus = pkg.get("bonus_pct", 0)
+        bonus_line = f" (включая +{bonus}% бонус)" if bonus > 0 else ""
+        await msg.reply_html(
+            f"💰 <b>Спасибо за поддержку!</b>\n\n"
+            f"{pkg['emoji']} Пакет: <b>{pkg['name']}</b>\n"
+            f"💠 +{pkg['currency']} очков Ассоциации{bonus_line}\n\n"
+            f"💠 Теперь у тебя: <b>{player['gold']}</b>\n\n"
+            f"<i>Годжо: «Хорошо, что ты не жадный.»</i>",
+            reply_markup=kb_for(user_id),
+        )
+        return
 
 
 async def vip_info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1281,6 +1313,79 @@ async def vip_info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await render(query, context, _vip_description_text(user_id),
                  InlineKeyboardMarkup(kb_rows))
+
+
+# ---------------------- Донат ----------------------
+
+def _donate_description_text(user_id: int) -> str:
+    player = database.get_or_create_player(user_id, "")
+    lines = [
+        "💰 <b>Донат — Очки Ассоциации за звёзды</b>",
+        "",
+        f"Базовый курс: <b>{DONATE_RATE} 💠 за 1 ⭐</b>",
+        f"💠 У тебя сейчас: <b>{player['gold']}</b>",
+        "",
+        "🎁 <b>Чем больше пакет — тем выгоднее курс!</b>",
+        "   🥉 Малый       — ×1.0 к курсу",
+        "   🥈 Средний     — <b>+20% бонус</b>",
+        "   🥇 Большой     — <b>+33% бонус</b>",
+        "   💎 Гигантский  — <b>+50% бонус</b> ⭐ ЛУЧШАЯ ЦЕНА",
+        "",
+        "Выбери пакет 👇",
+        "",
+        "<i>Оплата через Telegram Stars. Валюта начисляется мгновенно.</i>",
+    ]
+    return "\n".join(lines)
+
+
+def donate_menu_keyboard() -> InlineKeyboardMarkup:
+    rows = []
+    for key, pkg in DONATE_PACKAGES.items():
+        bonus = pkg.get("bonus_pct", 0)
+        bonus_txt = f" +{bonus}%" if bonus > 0 else ""
+        best = " ⭐" if key == "huge" else ""
+        rows.append([InlineKeyboardButton(
+            f"{pkg['emoji']} {pkg['name']}: {pkg['currency']}💠 за {pkg['stars']}⭐{bonus_txt}{best}",
+            callback_data=f"donate_buy:{key}",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Назад в профиль", callback_data="profile_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def donate_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                              package_key: str):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+
+    pkg = DONATE_PACKAGES.get(package_key)
+    if not pkg:
+        await query.message.reply_text("❌ Пакет не найден.")
+        return
+
+    bonus = pkg.get("bonus_pct", 0)
+    base = pkg["stars"] * DONATE_RATE
+    if bonus > 0:
+        desc = (
+            f"Покупка {pkg['currency']} 💠 за {pkg['stars']} ⭐.\n"
+            f"Базовая цена: {base} 💠 + {bonus}% бонус = {pkg['currency']} 💠."
+        )
+    else:
+        desc = f"Покупка {pkg['currency']} 💠 за {pkg['stars']} ⭐."
+
+    try:
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title=f"{pkg['emoji']} {pkg['name']} пакет",
+            description=desc,
+            payload=f"{DONATE_PAYLOAD_PREFIX}{package_key}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(f"{pkg['currency']} 💠", pkg["stars"])],
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось отправить инвойс доната: {e}")
+        await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
 
 
 # ---------------------- Кнопки ----------------------
@@ -2022,6 +2127,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await vip_info_handler(update, context)
         return
 
+    elif data == "donate_menu":
+        await render(query, context, _donate_description_text(user_id),
+                     donate_menu_keyboard())
+        return
+
+    elif data.startswith("donate_buy:"):
+        key = data.split(":", 1)[1]
+        await donate_buy_handler(update, context, key)
+        return
+
     elif data == "profile_inventory":
         context.user_data["prev_screen"] = "profile"
         items = database.get_inventory(user_id)
@@ -2141,6 +2256,35 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tag = " — новый!" if res["kind"] == "ce" else " (уже было)"
         line = f"{res['emoji']} <b>{res['name']}</b> ({res['rarity']}){tag}"
         text = "⚡ <b>Результат крутки:</b>\n\n" + line + "\n\n" + gacha_ce_menu_text(user_id)
+        await render(query, context, text, gacha_ce_menu_keyboard(user_id))
+
+    elif data == "gacha_ce_roll10":
+        cost = CE_GACHA_ROLL_COST_X10
+        player_now = database.get_or_create_player(user_id, "")
+        if player_now["gold"] < cost:
+            await render(query, context,
+                         f"❌ Не хватает очков. Нужно {cost}💠.",
+                         gacha_ce_menu_keyboard(user_id))
+            return
+        database.add_gold(user_id, -cost)
+
+        res = ce_types.roll_ce_type_x10(user_id)
+        lines = ["⚡ <b>Результаты 10 круток ПЭ:</b>", ""]
+        new_count = 0
+        dup_count = 0
+        for r in res["results"]:
+            tag = " ✨НОВОЕ✨" if r["kind"] == "ce" else " (дубликат)"
+            lines.append(f"{r['emoji']} <b>{r['name']}</b> ({r['rarity']}){tag}")
+            if r["kind"] == "ce":
+                new_count += 1
+            else:
+                dup_count += 1
+        lines.append("")
+        lines.append(f"📊 Новых: <b>{new_count}</b> · Дубликатов: {dup_count}")
+        lines.append("")
+        lines.append(gacha_ce_menu_text(user_id))
+
+        text = "\n".join(lines)
         await render(query, context, text, gacha_ce_menu_keyboard(user_id))
 
     elif data == "gacha_my_clans":

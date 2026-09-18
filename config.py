@@ -10,29 +10,22 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8429718072:AAEx88oIord1HwyX6kijZsh2dvu0AjJp9
 DB_PATH = "data/game.db"
 
 # --- Мир и перемещение ---
-MAX_WORLD = 260                  # крайняя координата карты (мир: -260..260)
-WORLD_STEP_PER_LEVEL = 50        # на сколько единиц открывается граница за уровень
-MOVE_STEP = 10                   # на сколько единиц двигаемся за один шаг
+MAX_WORLD = 260
+WORLD_STEP_PER_LEVEL = 50
+MOVE_STEP = 10
 
 
 def get_world_bounds(level: int) -> tuple[int, int]:
-    """
-    Возвращает (min_x, max_x) — границы карты, доступные на данном уровне.
-    Ур.1: -50..50, Ур.2: -100..100, ..., Ур.6+: -260..260 (вся карта).
-    """
     max_x = min(WORLD_STEP_PER_LEVEL * level, MAX_WORLD)
     return -max_x, max_x
 
-# --- Патрулирование (поиск проклятий) ---
-SPAWN_INTERVAL_SECONDS = 90      # фоновый тик: каждые 1.5 минуты Годжо "чувствует" проклятие
-SPAWN_CHANCE = 0.35              # шанс фонового обнаружения проклятия за тик
-PATROL_CHANCE = 0.55             # шанс сразу найти проклятие по кнопке "Патрулирование"
-ENCOUNTER_TTL_SECONDS = 60 * 6   # если проклятие не атаковано за 6 минут - оно уходит
+# --- Патрулирование ---
+SPAWN_INTERVAL_SECONDS = 90
+SPAWN_CHANCE = 0.35
+PATROL_CHANCE = 0.55
+ENCOUNTER_TTL_SECONDS = 60 * 6
 
-# --- Классы проклятий (заменяют "редкость" монстров) ---
-# Порядок — от сильнейшего к слабейшему (Особый класс -> 4-й класс).
-# 1-й класс - мини-босс района (редкий спавн в патруле).
-# Особый класс - босс района (вызывается ритуальным предметом, дропается с мини-босса).
+# --- Классы проклятий ---
 CURSE_CLASSES = ["Особый класс", "1-й класс", "2-й класс", "3-й класс", "4-й класс"]
 
 CLASS_EMOJI = {
@@ -43,7 +36,6 @@ CLASS_EMOJI = {
     "4-й класс": "🔹",
 }
 
-# Класс проклятия -> редкость его уникального дропа (для магазина/гачи)
 CLASS_TO_DROP_RARITY = {
     "Особый класс": "легендарный",
     "1-й класс": "эпический",
@@ -61,63 +53,71 @@ RARITY_EMOJI = {
 }
 
 # --- Прогрессия персонажа ---
-HP_PER_LEVEL = 10                # прибавка к max_hp за уровень
-EXP_BASE = 50                    # для уровня N нужно N * EXP_BASE опыта
-
-# "Контроль ПЭ" - главный стат: защита, физ. урон, коэффициент техник, реген ПЭ
+HP_PER_LEVEL = 10
+EXP_BASE = 50
 CE_CONTROL_BASE = 10
 CE_CONTROL_PER_LEVEL = 3
-
 MAX_CE_BASE = 40
 MAX_CE_PER_LEVEL = 6
 
-# --- Боевые формулы (всё завязано на "Контроль ПЭ") ---
-PLAYER_BASE_DMG_MIN = 3          # база физ. урона (до бонуса от Контроля ПЭ)
+# --- Боевые формулы ---
+PLAYER_BASE_DMG_MIN = 3
 PLAYER_BASE_DMG_MAX = 6
-PHYS_CE_COEF = 0.6               # физ. урон += ce_control * PHYS_CE_COEF
+PHYS_CE_COEF = 0.6
+TECH_CE_COEF = 0.05
+DEFENSE_CE_COEF = 0.006
+DEFENSE_CAP = 0.65
+CE_REGEN_BASE = 2
+CE_REGEN_CE_COEF = 0.15
 
-TECH_CE_COEF = 0.05              # множитель урона техник: 1 + ce_control * TECH_CE_COEF
-
-DEFENSE_CE_COEF = 0.006          # снижение входящего урона = ce_control * COEF (доля, капается)
-DEFENSE_CAP = 0.65               # максимум 65% снижения урона
-
-CE_REGEN_BASE = 2                # базовая регенерация ПЭ за ход
-CE_REGEN_CE_COEF = 0.15          # + ce_control * COEF регенерации за ход
-
-# --- Криты и Чёрная Вспышка ---
-# Крит в бою теперь оформлен как Чёрная Вспышка (Black Flash):
-#   двойной урон + шанс стана на 1 ход (см. combat.py).
-PLAYER_CRIT_CHANCE = 0.08        # шанс Чёрной Вспышки (снижен, чтобы была событием)
-PLAYER_CRIT_MULT = 2.0           # множитель урона Чёрной Вспышки
-BLACK_FLASH_STUN_CHANCE = 0.25   # шанс, что Чёрная Вспышка оглушит проклятие на 1 ход
-
+# --- Криты ---
+PLAYER_CRIT_CHANCE = 0.08
+PLAYER_CRIT_MULT = 2.0
+BLACK_FLASH_STUN_CHANCE = 0.25
 PLAYER_MISS_CHANCE = 0.10
-
 MONSTER_MISS_CHANCE = 0.15
-
 FLEE_CHANCE = 0.55
 
-GOLD_PER_HP = 0.25                # очки ассоциации за убийство = max_hp проклятия * это
+# --- Награды (уменьшено на 10% для гринда) ---
+GOLD_PER_HP = 0.225
 EXP_PER_HP = 0.34
-DROP_CHANCE = 0.55                # шанс получить уникальный дроп проклятия
-DEATH_GOLD_LOSS = 0.25            # доля очков, теряемая при поражении
+DROP_CHANCE = 0.55
+DEATH_GOLD_LOSS = 0.25
+
+# --- Масштаб проклятий по превышению уровня района ---
+LEVEL_SCALE_PER_EXCESS = 0.03
+LEVEL_SCALE_CAP = 2.0
+LEVEL_SCALE_REWARD_COEF = 0.5
 
 # --- Гача врождённых техник ---
-GACHA_ROLL_COST = 60              # цена одной прокрутки в очках Ассоциации
-GACHA_ROLL_COST_X10 = 540         # цена десяти прокруток (небольшая скидка)
+GACHA_ROLL_COST = 60
+GACHA_ROLL_COST_X10 = 540
 
 GACHA_RARITY_WEIGHTS = {
-    "Обычная": 60,
-    "Редкая": 27,
-    "Эпическая": 10,
-    "Легендарная (Особый класс)": 3,
+    "Обычная": 70.0,
+    "Редкая": 22.0,
+    "Эпическая": 7.0,
+    "Мифическая": 0.8,
+    "Легендарная (Особый класс)": 0.2,
 }
 
 GACHA_RARITY_EMOJI = {
     "Обычная": "⚪",
     "Редкая": "🔵",
     "Эпическая": "🟣",
+    "Мифическая": "🟡",
     "Легендарная (Особый класс)": "🟠",
 }
 
-MAX_EQUIPPED_TECHNIQUES = 3       # сколько техник можно взять с собой в бой
+MAX_EQUIPPED_TECHNIQUES = 3
+
+# --- Pity-система ---
+GACHA_PITY_LIMIT = 50
+GACHA_PITY_LEGEND_WEIGHT = 80
+GACHA_PITY_MYTH_WEIGHT = 20
+
+# --- VIP ---
+VIP_PRICE_STARS = 100
+VIP_DURATION_DAYS = 30
+VIP_REWARD_MULT = 2.0
+VIP_PAYLOAD = "vip_30_days"

@@ -1,22 +1,25 @@
 """
-Логика типов ПЭ, кланов и проклятий небес.
+Логика типов ПЭ, кланов и Проклятий Небес.
 
-- Ролл редкости и случайного типа ПЭ с учётом 15% шанса на Проклятие Небес.
-- Ролл клана (80% пусто).
+- Ролл типа ПЭ (по редкости, без Проклятий Небес).
+- Ролл клана: 15% — Проклятие Небес, 10% — обычный клан, 75% — пусто.
 - Выдача, экип, снятие.
-- Функции для combat.py: get_active_effects(user_id) собирает все эффекты
-  от типа ПЭ, клана и проклятия небес в один словарь.
+- Функция get_active_effects(user_id) собирает все эффекты
+  от активного типа ПЭ, клана и Проклятия Небес в один словарь.
+  Используется в combat.py.
 """
 import random
-import time
 import database
 from ce_types_data import (
     CE_TYPES, CLANS, HEAVENLY_RESTRICTIONS,
-    HEAVENLY_RESTRICTION_CHANCE, CE_RARITY_WEIGHTS, CLAN_ROLL_EMPTY_CHANCE,
+    CE_RARITY_WEIGHTS,
+    CLAN_GACHA_HEAVENLY_CHANCE, CLAN_GACHA_CLAN_CHANCE,
 )
 
 
-# ---------- Выборка по редкости ----------
+# ============================================================
+#  ВЫБОРКА ПО РЕДКОСТИ
+# ============================================================
 
 def _pool_by_rarity(rarity: str):
     return [key for key, t in CE_TYPES.items() if t["rarity"] == rarity]
@@ -28,30 +31,14 @@ def _roll_ce_rarity() -> str:
     return random.choices(rarities, weights=weights, k=1)[0]
 
 
-# ---------- Крутка типа ПЭ ----------
+# ============================================================
+#  КРУТКА ТИПА ПЭ
+# ============================================================
 
 def roll_ce_type(user_id: int) -> dict:
-    """Одна крутка гачи типов ПЭ.
-    Возвращает {ok, kind, ...}:
-        kind = "ce"       — выпал обычный тип ПЭ
-        kind = "heavenly" — выпало Проклятие Небес
-        kind = "duplicate" — тип уже был (только для ce)
-        kind = "heavenly_duplicate" — Проклятие Небес уже было
+    """Одна крутка гачи типов ПЭ. Только типы ПЭ, без Проклятий Небес.
+    Возвращает dict с полями kind: "ce" | "duplicate".
     """
-    # 1) Сначала роллим 15% на Проклятие Небес
-    if random.random() < HEAVENLY_RESTRICTION_CHANCE:
-        key = random.choice(list(HEAVENLY_RESTRICTIONS.keys()))
-        is_new = database.add_heavenly_restriction(user_id, key)
-        return {
-            "ok": True,
-            "kind": "heavenly" if is_new else "heavenly_duplicate",
-            "key": key,
-            "name": HEAVENLY_RESTRICTIONS[key]["name"],
-            "emoji": HEAVENLY_RESTRICTIONS[key]["emoji"],
-            "desc": HEAVENLY_RESTRICTIONS[key]["desc"],
-        }
-
-    # 2) Иначе — обычный тип ПЭ
     rarity = _roll_ce_rarity()
     key = random.choice(_pool_by_rarity(rarity))
     is_new = database.add_ce_type(user_id, key, rarity)
@@ -66,24 +53,53 @@ def roll_ce_type(user_id: int) -> dict:
     }
 
 
+# ============================================================
+#  КРУТКА КЛАНА (с шансом на Проклятие Небес)
+# ============================================================
+
 def roll_clan(user_id: int) -> dict:
-    """Одна крутка гачи кланов. 80% — пусто."""
-    if random.random() < CLAN_ROLL_EMPTY_CHANCE:
-        return {"ok": True, "kind": "empty"}
+    """Крутка гачи кланов.
+    15% — Проклятие Небес (50/50 между Тоджи/Маки и Мехамару),
+    10% — обычный клан (равные шансы между 8 кланами),
+    75% — пусто.
+    Возвращает dict с полями kind: "heavenly" | "heavenly_duplicate" |
+    "clan" | "duplicate" | "empty".
+    """
+    roll = random.random()
 
-    key = random.choice(list(CLANS.keys()))
-    is_new = database.add_clan(user_id, key)
-    return {
-        "ok": True,
-        "kind": "clan" if is_new else "duplicate",
-        "key": key,
-        "name": CLANS[key]["name"],
-        "emoji": CLANS[key]["emoji"],
-        "desc": CLANS[key]["desc"],
-    }
+    # 1) Проклятие Небес
+    if roll < CLAN_GACHA_HEAVENLY_CHANCE:
+        key = random.choice(list(HEAVENLY_RESTRICTIONS.keys()))
+        is_new = database.add_heavenly_restriction(user_id, key)
+        return {
+            "ok": True,
+            "kind": "heavenly" if is_new else "heavenly_duplicate",
+            "key": key,
+            "name": HEAVENLY_RESTRICTIONS[key]["name"],
+            "emoji": HEAVENLY_RESTRICTIONS[key]["emoji"],
+            "desc": HEAVENLY_RESTRICTIONS[key]["desc"],
+        }
+
+    # 2) Обычный клан
+    if roll < CLAN_GACHA_HEAVENLY_CHANCE + CLAN_GACHA_CLAN_CHANCE:
+        key = random.choice(list(CLANS.keys()))
+        is_new = database.add_clan(user_id, key)
+        return {
+            "ok": True,
+            "kind": "clan" if is_new else "duplicate",
+            "key": key,
+            "name": CLANS[key]["name"],
+            "emoji": CLANS[key]["emoji"],
+            "desc": CLANS[key]["desc"],
+        }
+
+    # 3) Пусто
+    return {"ok": True, "kind": "empty"}
 
 
-# ---------- Активные слоты ----------
+# ============================================================
+#  АКТИВНЫЕ СЛОТЫ
+# ============================================================
 
 def get_active_ce_type(user_id: int) -> str | None:
     return database.get_active_ce_type(user_id)
@@ -121,7 +137,10 @@ def set_active_heavenly(user_id: int, key: str) -> dict:
     if not database.has_heavenly_restriction(user_id, key):
         return {"ok": False, "msg": "Это Проклятие Небес ещё не выбито."}
     database.set_active_heavenly(user_id, key)
-    return {"ok": True, "msg": f"✅ Активное Проклятие Небес: {HEAVENLY_RESTRICTIONS[key]['emoji']} {HEAVENLY_RESTRICTIONS[key]['name']}"}
+    return {"ok": True, "msg": (
+        f"✅ Активное Проклятие Небес: "
+        f"{HEAVENLY_RESTRICTIONS[key]['emoji']} {HEAVENLY_RESTRICTIONS[key]['name']}"
+    )}
 
 
 def clear_ce_type(user_id: int) -> dict:
@@ -134,13 +153,19 @@ def clear_clan(user_id: int) -> dict:
     return {"ok": True, "msg": "Активный клан снят."}
 
 
-# ---------- Сборка эффектов для combat ----------
+def clear_heavenly(user_id: int) -> dict:
+    database.clear_active_heavenly(user_id)
+    return {"ok": True, "msg": "Активное Проклятие Небес снято."}
+
+
+# ============================================================
+#  СБОРКА ЭФФЕКТОВ ДЛЯ combat.py
+# ============================================================
 
 def get_active_effects(user_id: int) -> dict:
-    """Возвращает словарь всех активных эффектов от ПЭ, клана и Проклятия Небес.
-    Ключи — как в ce_types_data.py. Значения — числа. Множители умножаются,
-    шансы складываются, 'phys_taken_div' берём максимальный (не перемножаем).
-    """
+    """Собирает все активные эффекты от типа ПЭ, клана и Проклятия Небес.
+    Множители умножаются, шансы складываются, phys_taken_div — максимум.
+    Возвращает словарь со всеми возможными ключами и дефолтными значениями."""
     result = {
         "phys_dmg_mult": 1.0,
         "tech_dmg_mult": 1.0,
@@ -184,7 +209,9 @@ def get_active_effects(user_id: int) -> dict:
     return result
 
 
-# ---------- Форматирование ----------
+# ============================================================
+#  UI-ФОРМАТИРОВАНИЕ
+# ============================================================
 
 def format_ce_list(user_id: int) -> str:
     owned = database.get_ce_types(user_id)

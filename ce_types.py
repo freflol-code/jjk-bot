@@ -4,9 +4,11 @@
 - Ролл типа ПЭ (по редкости, без Проклятий Небес).
 - Ролл клана: 15% — Проклятие Небес, 10% — обычный клан, 75% — пусто.
 - Выдача, экип, снятие.
-- Функция get_active_effects(user_id) собирает все эффекты
-  от активного типа ПЭ, клана и Проклятия Небес в один словарь.
-  Используется в combat.py.
+- get_active_effects(user_id) собирает эффекты от активных слотов.
+- get_effective_stats(user_id, player) — эффективные max_hp/max_ce с учётом
+  hp_mult/ce_mult от Проклятий Небес.
+- При смене/снятии Проклятия Небес hp/ce в БД пропорционально пересчитываются,
+  чтобы доля здоровья/энергии сохранялась.
 """
 import random
 import database
@@ -36,9 +38,6 @@ def _roll_ce_rarity() -> str:
 # ============================================================
 
 def roll_ce_type(user_id: int) -> dict:
-    """Одна крутка гачи типов ПЭ. Только типы ПЭ, без Проклятий Небес.
-    Возвращает dict с полями kind: "ce" | "duplicate".
-    """
     rarity = _roll_ce_rarity()
     key = random.choice(_pool_by_rarity(rarity))
     is_new = database.add_ce_type(user_id, key, rarity)
@@ -54,20 +53,11 @@ def roll_ce_type(user_id: int) -> dict:
 
 
 # ============================================================
-#  КРУТКА КЛАНА (с шансом на Проклятие Небес)
+#  КРУТКА КЛАНА
 # ============================================================
 
 def roll_clan(user_id: int) -> dict:
-    """Крутка гачи кланов.
-    15% — Проклятие Небес (50/50 между Тоджи/Маки и Мехамару),
-    10% — обычный клан (равные шансы между 8 кланами),
-    75% — пусто.
-    Возвращает dict с полями kind: "heavenly" | "heavenly_duplicate" |
-    "clan" | "duplicate" | "empty".
-    """
     roll = random.random()
-
-    # 1) Проклятие Небес
     if roll < CLAN_GACHA_HEAVENLY_CHANCE:
         key = random.choice(list(HEAVENLY_RESTRICTIONS.keys()))
         is_new = database.add_heavenly_restriction(user_id, key)
@@ -79,8 +69,6 @@ def roll_clan(user_id: int) -> dict:
             "emoji": HEAVENLY_RESTRICTIONS[key]["emoji"],
             "desc": HEAVENLY_RESTRICTIONS[key]["desc"],
         }
-
-    # 2) Обычный клан
     if roll < CLAN_GACHA_HEAVENLY_CHANCE + CLAN_GACHA_CLAN_CHANCE:
         key = random.choice(list(CLANS.keys()))
         is_new = database.add_clan(user_id, key)
@@ -92,8 +80,6 @@ def roll_clan(user_id: int) -> dict:
             "emoji": CLANS[key]["emoji"],
             "desc": CLANS[key]["desc"],
         }
-
-    # 3) Пусто
     return {"ok": True, "kind": "empty"}
 
 
@@ -136,7 +122,14 @@ def set_active_heavenly(user_id: int, key: str) -> dict:
         return {"ok": False, "msg": "Такого Проклятия Небес не существует."}
     if not database.has_heavenly_restriction(user_id, key):
         return {"ok": False, "msg": "Это Проклятие Небес ещё не выбито."}
+
+    old_effects = get_active_effects(user_id)
+    old_mult_hp = old_effects.get("hp_mult", 1.0)
+    old_mult_ce = old_effects.get("ce_mult", 1.0)
+
     database.set_active_heavenly(user_id, key)
+    _rescale_hp_ce_on_switch(user_id, old_mult_hp, old_mult_ce)
+
     return {"ok": True, "msg": (
         f"✅ Активное Проклятие Небес: "
         f"{HEAVENLY_RESTRICTIONS[key]['emoji']} {HEAVENLY_RESTRICTIONS[key]['name']}"
@@ -154,18 +147,21 @@ def clear_clan(user_id: int) -> dict:
 
 
 def clear_heavenly(user_id: int) -> dict:
+    old_effects = get_active_effects(user_id)
+    old_mult_hp = old_effects.get("hp_mult", 1.0)
+    old_mult_ce = old_effects.get("ce_mult", 1.0)
+
     database.clear_active_heavenly(user_id)
+    _rescale_hp_ce_on_switch(user_id, old_mult_hp, old_mult_ce)
+
     return {"ok": True, "msg": "Активное Проклятие Небес снято."}
 
 
 # ============================================================
-#  СБОРКА ЭФФЕКТОВ ДЛЯ combat.py
+#  СБОРКА ЭФФЕКТОВ
 # ============================================================
 
 def get_active_effects(user_id: int) -> dict:
-    """Собирает все активные эффекты от типа ПЭ, клана и Проклятия Небес.
-    Множители умножаются, шансы складываются, phys_taken_div — максимум.
-    Возвращает словарь со всеми возможными ключами и дефолтными значениями."""
     result = {
         "phys_dmg_mult": 1.0,
         "tech_dmg_mult": 1.0,
@@ -183,15 +179,12 @@ def get_active_effects(user_id: int) -> dict:
     }
 
     sources = []
-
     ce_key = get_active_ce_type(user_id)
     if ce_key and ce_key in CE_TYPES:
         sources.append(CE_TYPES[ce_key]["effect"])
-
     clan_key = get_active_clan(user_id)
     if clan_key and clan_key in CLANS:
         sources.append(CLANS[clan_key]["effect"])
-
     heavenly_key = get_active_heavenly(user_id)
     if heavenly_key and heavenly_key in HEAVENLY_RESTRICTIONS:
         sources.append(HEAVENLY_RESTRICTIONS[heavenly_key]["effect"])
@@ -207,6 +200,77 @@ def get_active_effects(user_id: int) -> dict:
                 result[k] += v
 
     return result
+
+
+# ============================================================
+#  ЭФФЕКТИВНЫЕ СТАТЫ (max_hp/max_ce с учётом hp_mult/ce_mult)
+# ============================================================
+
+def get_effective_stats(user_id: int, player=None) -> dict:
+    """Возвращает {hp, max_hp, ce, max_ce} с учётом hp_mult / ce_mult."""
+    if player is None:
+        player = database.get_or_create_player(user_id, "")
+    effects = get_active_effects(user_id)
+    hp_mult = effects.get("hp_mult", 1.0)
+    ce_mult = effects.get("ce_mult", 1.0)
+
+    eff_max_hp = max(1, int(player["max_hp"] * hp_mult))
+    eff_max_ce = max(1, int(player["max_ce"] * ce_mult))
+
+    return {
+        "max_hp": eff_max_hp,
+        "max_ce": eff_max_ce,
+        "hp": min(player["hp"], eff_max_hp),
+        "ce": min(player["ce"], eff_max_ce),
+    }
+
+
+def get_effective_player(user_id: int) -> dict:
+    """dict-обёртка игрока с эффективными hp/ce. Удобно для отображения."""
+    player = database.get_or_create_player(user_id, "")
+    eff = get_effective_stats(user_id, player)
+    d = dict(player)
+    d["max_hp"] = eff["max_hp"]
+    d["max_ce"] = eff["max_ce"]
+    d["hp"] = eff["hp"]
+    d["ce"] = eff["ce"]
+    return d
+
+
+def _rescale_hp_ce_on_switch(user_id: int, old_mult_hp: float, old_mult_ce: float):
+    """Пропорционально пересчитывает hp/ce в БД после смены Проклятия Небес.
+    Вызывать ПОСЛЕ того, как активный слот в БД уже изменён."""
+    player = database.get_or_create_player(user_id, "")
+    new_effects = get_active_effects(user_id)
+    new_mult_hp = new_effects.get("hp_mult", 1.0)
+    new_mult_ce = new_effects.get("ce_mult", 1.0)
+
+    if old_mult_hp != new_mult_hp:
+        old_eff_max = max(1, int(player["max_hp"] * old_mult_hp))
+        new_eff_max = max(1, int(player["max_hp"] * new_mult_hp))
+        old_eff_hp = min(player["hp"], old_eff_max)
+        new_eff_hp = int(old_eff_hp * new_eff_max / old_eff_max)
+        new_eff_hp = max(1, min(new_eff_hp, new_eff_max))
+        database.update_player_hp(user_id, new_eff_hp)
+
+    if old_mult_ce != new_mult_ce:
+        old_eff_max = max(1, int(player["max_ce"] * old_mult_ce))
+        new_eff_max = max(1, int(player["max_ce"] * new_mult_ce))
+        old_eff_ce = min(player["ce"], old_eff_max)
+        new_eff_ce = int(old_eff_ce * new_eff_max / old_eff_max)
+        new_eff_ce = max(0, min(new_eff_ce, new_eff_max))
+        database.update_player_ce(user_id, new_eff_ce)
+
+
+def compress_hp_ce(user_id: int):
+    """Обрезает hp/ce в БД до эффективных значений. Вызывать после levelup
+    или любого скачка max_hp/max_ce, чтобы в БД не оставались «излишки»."""
+    player = database.get_or_create_player(user_id, "")
+    eff = get_effective_stats(user_id, player)
+    if player["hp"] > eff["max_hp"]:
+        database.update_player_hp(user_id, eff["max_hp"])
+    if player["ce"] > eff["max_ce"]:
+        database.update_player_ce(user_id, eff["max_ce"])
 
 
 # ============================================================

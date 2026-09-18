@@ -311,8 +311,7 @@ def gacha_clan_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton(f"🎰 1 ({CLAN_GACHA_ROLL_COST}💠)", callback_data="gacha_clan_roll1"),
             InlineKeyboardButton(f"🎰 10 ({CLAN_GACHA_ROLL_COST_X10}💠)", callback_data="gacha_clan_roll10"),
         ],
-        [InlineKeyboardButton("📖 Мои кланы", callback_data="gacha_my_clans")],
-        [InlineKeyboardButton("🌠 Мои Проклятия Небес", callback_data="gacha_my_heavenly")],
+        [InlineKeyboardButton("🎯 Моё снаряжение", callback_data="gacha_my_equipment")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_hub")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -330,27 +329,12 @@ def gacha_ce_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
-def my_clans_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    owned = database.get_clans(user_id)
-    active = database.get_active_clan(user_id)
+def my_equipment_keyboard(user_id: int) -> InlineKeyboardMarkup:
     rows = []
-    for row in owned:
-        key = row["clan_key"]
-        c = CLANS.get(key)
-        if not c:
-            continue
-        if key == active:
-            rows.append([InlineKeyboardButton(
-                f"✅ {c['emoji']} {c['name']} (снять)",
-                callback_data="clan_clear",
-            )])
-        else:
-            rows.append([InlineKeyboardButton(
-                f"{c['emoji']} {c['name']} — надеть",
-                callback_data=f"clan_set:{key}",
-            )])
-    if not owned:
-        rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
+    if database.get_active_clan(user_id):
+        rows.append([InlineKeyboardButton("❌ Снять клан", callback_data="clan_clear")])
+    if database.get_active_heavenly(user_id):
+        rows.append([InlineKeyboardButton("❌ Снять Проклятие Небес", callback_data="heavenly_clear")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_clan_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -377,31 +361,6 @@ def my_ce_keyboard(user_id: int) -> InlineKeyboardMarkup:
     if not owned:
         rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_ce_menu")])
-    return InlineKeyboardMarkup(rows)
-
-
-def my_heavenly_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    owned = database.get_heavenly_restrictions(user_id)
-    active = database.get_active_heavenly(user_id)
-    rows = []
-    for row in owned:
-        key = row["heavenly_key"]
-        h = HEAVENLY_RESTRICTIONS.get(key)
-        if not h:
-            continue
-        if key == active:
-            rows.append([InlineKeyboardButton(
-                f"✅ {h['emoji']} {h['name']} (снять)",
-                callback_data="heavenly_clear",
-            )])
-        else:
-            rows.append([InlineKeyboardButton(
-                f"{h['emoji']} {h['name']} — надеть",
-                callback_data=f"heavenly_set:{key}",
-            )])
-    if not owned:
-        rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_clan_menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -839,6 +798,8 @@ def gacha_clan_menu_text(user_id: int) -> str:
         "  🌠 Проклятие Небес — <b>15%</b>\n"
         "  🩸 Обычный клан — <b>10%</b>\n"
         "  💨 Пусто — 75%\n\n"
+        "<i>Кланы и Проклятия Небес не копятся: что выпало — то и встало "
+        "в единственный слот. Старое затирается.</i>\n\n"
         "<i>Хакари: «Рискни — тут либо клан, либо проклятие, либо ничего.»</i>"
     )
 
@@ -854,6 +815,7 @@ def gacha_ce_menu_text(user_id: int) -> str:
         "  ⚪ Обычная — 68%\n"
         "  🟣 Эпическая — 26%\n"
         "  🟠 Легендарная — 6%\n\n"
+        "<i>Типы ПЭ копятся — потом можно переключать активный.</i>\n\n"
         "<i>Хакари: «Каждому своя энергия. Некоторым — вообще никакой.»</i>"
     )
 
@@ -1986,13 +1948,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if k == "empty":
                 lines.append("💨 Пусто.")
             elif k == "heavenly":
-                lines.append(f"🌠 <b>{res['emoji']} {res['name']}</b> — новое!\n   <i>{res['desc']}</i>")
-            elif k == "heavenly_duplicate":
-                lines.append(f"🌠 {res['emoji']} {res['name']} (уже было)")
+                was = res.get("old_name")
+                suffix = f" (было: {was})" if was else ""
+                lines.append(f"🌠 <b>{res['emoji']} {res['name']}</b> — снаряжено!{suffix}\n   <i>{res['desc']}</i>")
             elif k == "clan":
-                lines.append(f"🩸 <b>{res['emoji']} {res['name']}</b> — новый клан!\n   <i>{res['desc']}</i>")
-            else:
-                lines.append(f"🩸 {res['emoji']} {res['name']} (уже было)")
+                was = res.get("old_name")
+                suffix = f" (было: {was})" if was else ""
+                lines.append(f"🩸 <b>{res['emoji']} {res['name']}</b> — снаряжено!{suffix}\n   <i>{res['desc']}</i>")
 
         header = f"🩸 <b>Результат {count} круток кланов:</b>" if count > 1 else "🩸 <b>Результат крутки:</b>"
         text = header + "\n\n" + "\n".join(lines) + "\n\n" + gacha_clan_menu_text(user_id)
@@ -2019,29 +1981,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = header + "\n\n" + "\n".join(lines) + "\n\n" + gacha_ce_menu_text(user_id)
         await render(query, context, text, gacha_ce_menu_keyboard(user_id))
 
-    elif data == "gacha_my_clans":
-        await render(query, context, ce_types.format_clan_list(user_id),
-                     my_clans_keyboard(user_id))
+    elif data == "gacha_my_equipment":
+        await render(query, context, ce_types.format_equipment_list(user_id),
+                     my_equipment_keyboard(user_id))
 
     elif data == "gacha_my_ce":
         await render(query, context, ce_types.format_ce_list(user_id),
                      my_ce_keyboard(user_id))
 
-    elif data == "gacha_my_heavenly":
-        await render(query, context, ce_types.format_heavenly_list(user_id),
-                     my_heavenly_keyboard(user_id))
-
-    elif data.startswith("clan_set:"):
-        key = data.split(":", 1)[1]
-        res = ce_types.set_active_clan(user_id, key)
-        text = ("✅ " if res["ok"] else "❌ ") + res["msg"] + "\n\n" + ce_types.format_clan_list(user_id)
-        await render(query, context, text, my_clans_keyboard(user_id))
-
     elif data == "clan_clear":
         ce_types.clear_clan(user_id)
         await render(query, context,
-                     "✅ Активный клан снят.\n\n" + ce_types.format_clan_list(user_id),
-                     my_clans_keyboard(user_id))
+                     "✅ Клан снят.\n\n" + ce_types.format_equipment_list(user_id),
+                     my_equipment_keyboard(user_id))
 
     elif data.startswith("ce_set:"):
         key = data.split(":", 1)[1]
@@ -2055,17 +2007,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                      "✅ Активный тип ПЭ снят.\n\n" + ce_types.format_ce_list(user_id),
                      my_ce_keyboard(user_id))
 
-    elif data.startswith("heavenly_set:"):
-        key = data.split(":", 1)[1]
-        res = ce_types.set_active_heavenly(user_id, key)
-        text = ("✅ " if res["ok"] else "❌ ") + res["msg"] + "\n\n" + ce_types.format_heavenly_list(user_id)
-        await render(query, context, text, my_heavenly_keyboard(user_id))
-
     elif data == "heavenly_clear":
         ce_types.clear_heavenly(user_id)
         await render(query, context,
-                     "✅ Активное Проклятие Небес снято.\n\n" + ce_types.format_heavenly_list(user_id),
-                     my_heavenly_keyboard(user_id))
+                     "✅ Проклятие Небес снято.\n\n" + ce_types.format_equipment_list(user_id),
+                     my_equipment_keyboard(user_id))
 
     elif data == "gacha_menu":
         context.user_data["gacha_from"] = "game"

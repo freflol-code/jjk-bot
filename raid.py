@@ -12,6 +12,9 @@ raid.py — рейды на Сукуну для 1-5 игроков.
   или врождённой техникой (если хватает ПЭ). Затем Сукуна отвечает.
 - Сукуна может критовать.
 - VIP даёт ×2 к золоту, опыту и дропу с рейда.
+- Расширения Территории: на рейд может быть активен ТОЛЬКО ОДИН домен.
+  Кто первый активировал — тот владелец. Массовые домены (aoe) бьют
+  и союзников, кроме владельца.
 - Победа/поражение заканчивают рейд, все возвращаются в школу (X=0).
 """
 import json
@@ -20,12 +23,22 @@ import time
 
 import database
 import gacha
+from domains_data import DOMAINS
+from combat import DOMAIN_EFFECTS, _find_domain_by_technique
 
 
 FINGER_CD_SECONDS = 12 * 3600
 MAX_PLAYERS = 5
 SUKUNA_NAME = "Сукуна (Рейд-босс)"
 SUKUNA_EMOJI = "👺"
+
+
+# Домены, которые наносят массовый урон по области — бьют и союзников.
+AOE_DOMAINS = {
+    "malevolent_shrine",          # Злая Святыня — тысяча лезвий по области
+    "coffin_of_the_iron_mountain",  # Гроб Железной Горы — магма по куполу
+    "ashen_boundless_reach",      # Бескрайний Пепелящий Простор — пепел везде
+}
 
 
 SUKUNA_PHASES = {
@@ -93,8 +106,233 @@ def _ensure_tables():
             expires_at INTEGER NOT NULL
         )
     """)
+
+    # Миграция: домен хранится на уровне рейда
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(raids)")
+    raid_cols = {r["name"] for r in cur.fetchall()}
+    if "domain_key" not in raid_cols:
+        conn.execute("ALTER TABLE raids ADD COLUMN domain_key TEXT")
+    if "domain_turns" not in raid_cols:
+        conn.execute("ALTER TABLE raids ADD COLUMN domain_turns INTEGER NOT NULL DEFAULT 0")
+    if "domain_owner_id" not in raid_cols:
+        conn.execute("ALTER TABLE raids ADD COLUMN domain_owner_id INTEGER")
+
     conn.commit()
     _db_ready = True
+
+
+# ============================================================
+#  ДОМЕН НА УРОВНЕ РЕЙДА (один на всех)
+# ============================================================
+
+def _get_raid_domain(raid_id: int) -> tuple[int | None, str | None, int]:
+    """Возвращает (owner_id, domain_key, turns). Если домена нет — (None, None, 0)."""
+    conn = database.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT domain_key, domain_turns, domain_owner_id FROM raids WHERE id = ?",
+        (raid_id,),
+    )
+    row = cur.fetchone()
+    if not row or not row["domain_key"] or (row["domain_turns"] or 0) <= 0:
+        return (None, None, 0)
+    return (row["domain_owner_id"], row["domain_key"], row["domain_turns"])
+
+
+def _set_raid_domain(raid_id: int, owner_id: int, domain_key: str, turns: int):
+    conn = database.get_conn()
+    conn.execute(
+        "UPDATE raids SET domain_key = ?, domain_turns = ?, domain_owner_id = ? WHERE id = ?",
+        (domain_key, turns, owner_id, raid_id),
+    )
+    conn.commit()
+
+
+def _decrement_raid_domain(raid_id: int) -> tuple[int | None, str | None, int]:
+    """Уменьшает счётчик ходов. При 0 — снимает домен."""
+    conn = database.get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT domain_key, domain_turns, domain_owner_id FROM raids WHERE id = ?",
+        (raid_id,),
+    )
+    row = cur.fetchone()
+    if not row or not row["domain_key"]:
+        return (None, None, 0)
+    new_turns = max(0, (row["domain_turns"] or 0) - 1)
+    if new_turns == 0:
+        conn.execute(
+            "UPDATE raids SET domain_key = NULL, domain_turns = 0, domain_owner_id = NULL "
+            "WHERE id = ?",
+            (raid_id,),
+        )
+        conn.commit()
+        return (None, None, 0)
+    conn.execute(
+        "UPDATE raids SET domain_turns = ? WHERE id = ?",
+        (new_turns, raid_id),
+    )
+    conn.commit()
+    return (row["domain_owner_id"], row["domain_key"], new_turns)
+
+
+def _clear_raid_domain(raid_id: int):
+    conn = database.get_conn()
+    conn.execute(
+        "UPDATE raids SET domain_key = NULL, domain_turns = 0, domain_owner_id = NULL "
+        "WHERE id = ?",
+        (raid_id,),
+    )
+    conn.commit()
+
+
+def _activate_raid_domain(raid: dict, user_id: int, technique_name: str):
+    """Пытается активировать домен. Если на рейде уже есть активный домен —
+    отказ, даже если чужой."""
+    technique = gacha.get_technique(technique_name)
+    if not technique or not technique.get("has_domain"):
+        return
+    domain_key = _find_domain_by_technique(technique_name)
+    if not domain_key:
+        return
+
+    owner_id, cur_key, cur_turns = _get_raid_domain(raid["id"])
+    if cur_key:
+        cur_data = DOMAINS.get(cur_key)
+        cur_name = cur_data["name"] if cur_data else cur_key
+        owner_nick = "?"
+        if owner_id:
+            owner_nick = (
+                database.get_or_create_player(owner_id, "")["username"]
+                or f"Игрок {owner_id}"
+            )
+        nick = database.get_or_create_player(user_id, "")["username"] or f"Игрок {user_id}"
+        raid["log"].append(
+            f"   ⚠️ <b>{nick}</b> не может войти в Расширение: "
+            f"на арене уже <b>{cur_name}</b> ({owner_nick}, {cur_turns} х.)"
+        )
+        return
+
+    domain_data = DOMAINS[domain_key]
+    effect = DOMAIN_EFFECTS.get(domain_key, {})
+    nick = database.get_or_create_player(user_id, "")["username"] or f"Игрок {user_id}"
+
+    if effect.get("gamble"):
+        if random.random() < 0.5:
+            _set_raid_domain(raid["id"], user_id, domain_key, 3)
+            raid["log"].append(
+                f"   🎰 <b>{nick}: УДАЧА!</b> {domain_data['emoji']} "
+                f"<b>{domain_data['name']}</b> активирован на 3 хода!"
+            )
+        else:
+            database.update_player_ce(user_id, 0)
+            raid["log"].append(
+                f"   💀 <b>{nick}: ПРОИГРЫШ!</b> {domain_data['emoji']} "
+                f"<b>{domain_data['name']}</b> обнулил твою ПЭ!"
+            )
+        return
+
+    _set_raid_domain(raid["id"], user_id, domain_key, 3)
+    raid["log"].append(
+        f"   {domain_data['emoji']} <b>{nick}: Расширение Территории</b> — "
+        f"<b>{domain_data['name']}</b>!"
+    )
+
+
+def _process_raid_domain_tick(raid: dict) -> bool:
+    """Тик домена после хода владельца.
+    Возвращает True, если Сукуна умер от эффектов домена."""
+    owner_id, domain_key, turns = _get_raid_domain(raid["id"])
+    if not domain_key or turns <= 0:
+        return False
+
+    effect = DOMAIN_EFFECTS.get(domain_key, {})
+    domain_data = DOMAINS.get(domain_key, {})
+    domain_name = domain_data.get("name", domain_key)
+    is_aoe = domain_key in AOE_DOMAINS
+
+    parts = get_participants(raid["id"])
+
+    # 1. Рика бьёт по Сукуне
+    if effect.get("summon_rika"):
+        rika_dmg = effect.get("rika_dmg", 50)
+        if raid["boss_hp"] > 0:
+            raid["boss_hp"] = max(0, raid["boss_hp"] - rika_dmg)
+            raid["log"].append(f"   👻 <b>Рика Оримо</b> бьёт Сукуну: {rika_dmg} урона!")
+            if raid["boss_hp"] <= 0:
+                return True
+
+    # 2. DoT от домена
+    if effect.get("dot_dmg"):
+        base = effect["dot_dmg"]
+        growth = effect.get("dot_growth", 0)
+        turns_elapsed = 3 - turns
+        dot = base + growth * turns_elapsed
+        dot_name = effect.get("dot_name", "Эффект домена")
+
+        # Босс получает всегда
+        if raid["boss_hp"] > 0:
+            raid["boss_hp"] = max(0, raid["boss_hp"] - dot)
+            raid["log"].append(f"   {dot_name} по Сукуне: {dot} урона!")
+            if raid["boss_hp"] <= 0:
+                return True
+
+        # Если домен массовый — союзники (кроме владельца) тоже получают
+        if is_aoe:
+            for p in parts:
+                if p["user_id"] == owner_id:
+                    continue
+                if not p["alive"]:
+                    continue
+                new_hp = max(0, p["hp"] - dot)
+                alive = 1 if new_hp > 0 else 0
+                nick = (
+                    database.get_or_create_player(p["user_id"], "")["username"]
+                    or f"Игрок {p['user_id']}"
+                )
+                conn = database.get_conn()
+                conn.execute(
+                    "UPDATE raid_participants SET hp = ?, alive = ? "
+                    "WHERE raid_id = ? AND user_id = ?",
+                    (new_hp, alive, raid["id"], p["user_id"]),
+                )
+                conn.commit()
+                if alive:
+                    raid["log"].append(f"   └ ☠️ {dot_name} бьёт {nick}: {dot} (HP: {new_hp})")
+                else:
+                    raid["log"].append(f"   └ 💀 {nick} падает от массового урона домена!")
+
+    # 3. Лечение владельца
+    if effect.get("heal_per_turn"):
+        heal = effect["heal_per_turn"]
+        t = next((p for p in parts if p["user_id"] == owner_id), None)
+        if t and t["alive"]:
+            new_hp = min(t["max_hp"], t["hp"] + heal)
+            if new_hp > t["hp"]:
+                conn = database.get_conn()
+                conn.execute(
+                    "UPDATE raid_participants SET hp = ? WHERE raid_id = ? AND user_id = ?",
+                    (new_hp, raid["id"], owner_id),
+                )
+                conn.commit()
+                raid["log"].append(f"   💚 Домен исцеляет владельца: +{new_hp - t['hp']} HP.")
+
+    # 4. Уменьшаем счётчик
+    new_owner, new_key, new_turns = _decrement_raid_domain(raid["id"])
+    if new_key is None:
+        raid["log"].append(f"   🌫️ <b>{domain_name}</b> рассеялось.")
+    else:
+        raid["log"].append(f"   ⏳ <b>{domain_name}</b>: осталось {new_turns} х.")
+
+    # 5. Если владелец умер за время тика — снимаем домен
+    fresh_parts = get_participants(raid["id"])
+    owner_part = next((p for p in fresh_parts if p["user_id"] == owner_id), None)
+    if owner_part and not owner_part["alive"]:
+        _clear_raid_domain(raid["id"])
+        raid["log"].append(f"   💀 Владелец домена пал — <b>{domain_name}</b> рассеялось.")
+
+    return False
 
 
 # ============================================================
@@ -185,6 +423,9 @@ def _row_to_raid(row) -> dict:
         "log": json.loads(row["log_json"] or "[]"),
         "created_at": row["created_at"],
         "finished_at": row["finished_at"],
+        "domain_key": row["domain_key"] if "domain_key" in row.keys() else None,
+        "domain_turns": row["domain_turns"] if "domain_turns" in row.keys() else 0,
+        "domain_owner_id": row["domain_owner_id"] if "domain_owner_id" in row.keys() else None,
     }
 
 
@@ -389,8 +630,8 @@ def is_player_turn(raid_id: int, user_id: int) -> bool:
 
 def player_attack(raid_id: int, user_id: int, technique_name: str | None = None) -> dict:
     """Атака игрока. Если technique_name задано — используется врождённая
-    техника (тратится ПЭ, урон считается по формуле техники). Иначе — обычная
-    физическая атака."""
+    техника. Мастер-техника пытается активировать домен.
+    Урон умножается на dmg_mult АКТИВНОГО домена (если он есть)."""
     raid = get_raid(raid_id)
     if not raid or raid["status"] != "battle":
         return {"ok": False, "msg": "Бой не идёт."}
@@ -419,11 +660,18 @@ def player_attack(raid_id: int, user_id: int, technique_name: str | None = None)
         dmg = _physical_damage(user_id, player)
         verb = "атаковал"
 
+    # Множитель активного домена — работает для ВСЕХ игроков, не только владельца.
+    # Владелец — тот, кто поставил домен, получает свой dmg_mult. Союзники — тоже,
+    # но по задумке это бафф владельца. В рейде эффект общий, что логично.
+    _owner, dk, dt = _get_raid_domain(raid_id)
+    if dk and dt > 0:
+        deff = DOMAIN_EFFECTS.get(dk, {})
+        dmg = int(dmg * deff.get("dmg_mult", 1.0))
+
     black_flash = random.random() < _black_flash_chance(user_id)
     if black_flash:
         dmg = int(dmg * PLAYER_CRIT_MULT)
 
-    # Списываем ПЭ, если использовали технику
     if technique:
         database.update_player_ce(user_id, player["ce"] - technique["ce_cost"])
 
@@ -434,10 +682,25 @@ def player_attack(raid_id: int, user_id: int, technique_name: str | None = None)
             + ("⚫⚡ <b>ЧЁРНАЯ ВСПЫШКА!</b> " if black_flash else "")
             + f"и нанёс <b>{dmg}</b> урона Сукуне.")
     raid["log"].append(line)
-    raid["log"] = raid["log"][-12:]
+    raid["log"] = raid["log"][-40:]
 
     if raid["boss_hp"] <= 0:
         return _finish_victory(raid)
+
+    # Активация домена при использовании мастер-техники
+    if technique and technique.get("has_domain"):
+        _activate_raid_domain(raid, user_id, technique_name)
+
+    # Тик активного домена — только в ход владельца
+    _owner, dk, dt = _get_raid_domain(raid_id)
+    if dk and dt > 0 and _owner == user_id:
+        if _process_raid_domain_tick(raid):
+            return _finish_victory(raid)
+
+    # После возможной смерти союзников от AoE — проверим, жив ли кто-то
+    alive_parts = [p for p in get_participants(raid["id"]) if p["alive"]]
+    if not alive_parts:
+        return _finish_defeat(raid)
 
     raid["turn_idx"] += 1
     _save_raid(raid)
@@ -455,6 +718,9 @@ def _sukuna_turn(raid: dict) -> dict:
     if not parts:
         return _finish_defeat(raid)
 
+    _owner_id, dk, dt = _get_raid_domain(raid["id"])
+    deff = DOMAIN_EFFECTS.get(dk, {}) if dk and dt > 0 else {}
+
     attack_type = random.choice(["strike", "dismantle"])
     if attack_type == "strike":
         targets = [random.choice(parts)]
@@ -469,13 +735,37 @@ def _sukuna_turn(raid: dict) -> dict:
     raid["log"].append(f"👹 <b>{SUKUNA_NAME}</b> применяет: {header}")
 
     for t in targets:
+        nick = database.get_or_create_player(t["user_id"], "")["username"] or f"Игрок {t['user_id']}"
+
+        # Защита от домена действует только на владельца
+        is_owner = (_owner_id is not None and t["user_id"] == _owner_id)
+        dodge_bonus = 0.0
+        def_mult = 1.0
+        enemy_dmg_mult = 1.0
+        if is_owner and deff:
+            dodge_bonus = deff.get("dodge_bonus", 0.0) + deff.get("enemy_miss_bonus", 0.0)
+            def_mult = deff.get("defense_mult", 1.0)
+            enemy_dmg_mult = deff.get("enemy_dmg_mult", 1.0)
+
+        if dodge_bonus > 0 and random.random() < dodge_bonus:
+            raid["log"].append(f"   └ 🌀 {nick} уклонился благодаря домену!")
+            continue
+
         raw = random.randint(phase["dmg_min"], phase["dmg_max"])
         crit = random.random() < phase["crit_chance"]
         if crit:
             raw = int(raw * phase["crit_mult"])
 
+        raw = int(raw * def_mult * enemy_dmg_mult)
+        raw = max(1, raw)
+
         new_hp = t["hp"] - raw
         alive = 1
+        domain_note = (
+            f" (домен x{def_mult:.2f})"
+            if is_owner and (def_mult < 1.0 or enemy_dmg_mult < 1.0)
+            else ""
+        )
         if new_hp <= 0:
             new_hp = 0
             alive = 0
@@ -487,14 +777,28 @@ def _sukuna_turn(raid: dict) -> dict:
         )
         conn.commit()
 
-        nick = database.get_or_create_player(t["user_id"], "")["username"] or f"Игрок {t['user_id']}"
         crit_txt = " 💥<b>КРИТ!</b>" if crit else ""
         if alive:
-            raid["log"].append(f"   └ {nick} получает <b>{raw}</b> урона (HP: {new_hp}).{crit_txt}")
+            raid["log"].append(
+                f"   └ {nick} получает <b>{raw}</b> урона{domain_note} (HP: {new_hp}).{crit_txt}"
+            )
         else:
             raid["log"].append(f"   └ 💀 {nick} падает! (было {raw} урона).{crit_txt}")
 
-    raid["log"] = raid["log"][-12:]
+    raid["log"] = raid["log"][-40:]
+
+    # Если владелец домена умер — снимаем домен
+    fresh_owner, fresh_key, fresh_turns = _get_raid_domain(raid["id"])
+    if fresh_key and fresh_owner:
+        owner_part = next(
+            (p for p in get_participants(raid["id"]) if p["user_id"] == fresh_owner),
+            None,
+        )
+        if owner_part and not owner_part["alive"]:
+            dd = DOMAINS.get(fresh_key, {})
+            dname = dd.get("name", fresh_key)
+            _clear_raid_domain(raid["id"])
+            raid["log"].append(f"   💀 Владелец домена пал — <b>{dname}</b> рассеялось.")
 
     raid["turn_idx"] = 0
     _save_raid(raid)
@@ -511,6 +815,7 @@ def _send_all_to_school(raid_id: int):
     for p in get_participants(raid_id):
         database.update_player_x(p["user_id"], 0)
         database.clear_encounter(p["user_id"])
+    _clear_raid_domain(raid_id)
 
 
 def _finish_victory(raid: dict) -> dict:
@@ -601,12 +906,31 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
     cur_id = _current_player(raid)
     viewer = next((p for p in parts if p["user_id"] == viewer_id), None)
 
+    owner_id, dk, dt = _get_raid_domain(raid_id)
+    domain_line = ""
+    if dk and dt > 0:
+        dd = DOMAINS.get(dk, {})
+        owner_nick = "?"
+        if owner_id:
+            owner_nick = (
+                database.get_or_create_player(owner_id, "")["username"]
+                or f"Игрок {owner_id}"
+            )
+        marker = " (твой)" if owner_id == viewer_id else ""
+        aoe_mark = " · AoE" if dk in AOE_DOMAINS else ""
+        domain_line = (
+            f"{dd.get('emoji','')} <b>Домен:</b> {dd.get('name', dk)} — "
+            f"<i>{owner_nick}</i>, {dt} х.{marker}{aoe_mark}"
+        )
+
     lines = [
         "👺 <b>Рейд на Сукуну</b>",
         f"🔴 Пальцев: {raid['fingers']}",
         f"❤️ HP Сукуны: <b>{raid['boss_hp']}/{raid['boss_max_hp']}</b>",
-        "",
     ]
+    if domain_line:
+        lines.append(domain_line)
+    lines.append("")
 
     if viewer:
         vp = database.get_or_create_player(viewer_id, "")
@@ -633,7 +957,8 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
             marker = "👤"
         else:
             marker = "❤️"
-        lines.append(f"{marker} {nick}{vip_mark}: {p['hp']}/{p['max_hp']}")
+        owner_mark = " 👑домен" if (owner_id is not None and p["user_id"] == owner_id and dt > 0) else ""
+        lines.append(f"{marker} {nick}{vip_mark}{owner_mark}: {p['hp']}/{p['max_hp']}")
 
     lines.append("")
     if cur_id:
@@ -647,7 +972,7 @@ def format_battle(raid_id: int, viewer_id: int) -> str:
 
     lines.append("")
     lines.append("<b>Лог:</b>")
-    for l in raid["log"][-5:]:
+    for l in raid["log"][-8:]:
         lines.append(l)
 
     return "\n".join(lines)

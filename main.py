@@ -91,14 +91,6 @@ def format_active_buffs(user_id: int) -> str:
 
 
 def _domain_button(user_id: int) -> tuple[str, str]:
-    """Возвращает (текст_кнопки, callback_data) для кнопки домена.
-    Кнопка показывается всегда в бою, состояние разное:
-      - домен активен → «Домен активен (X х.)», cb=noop
-      - домен не разблокирован → «Домен: N/20», cb=domain_info
-      - разблокирован, условие не выполнено → «Условие: X/Y …», cb=domain_info
-      - разблокирован, условие выполнено, 1-й раз → «Использовать домен», cb=domain_activate
-      - разблокирован, условие выполнено, повторно → «Домен (−X% HP)», cb=domain_activate
-    """
     dk, dt = database.get_domain(user_id)
     if dk and dt > 0:
         return (f"🌌 Домен активен ({dt} х.)", "noop")
@@ -107,7 +99,6 @@ def _domain_button(user_id: int) -> tuple[str, str]:
     if technique_name:
         cond = combat.check_activation_condition(user_id)
         if cond["ok"]:
-            # Проверяем, будет ли это повторная активация
             uses_before = database.get_domain_uses_in_battle(user_id)
             penalty = combat._get_reactivation_penalty(uses_before)
             if penalty > 0:
@@ -115,7 +106,6 @@ def _domain_button(user_id: int) -> tuple[str, str]:
             return ("🌌 Использовать домен", "domain_activate")
         return (f"🌌 Условие: {cond['text']}", "domain_info")
 
-    # Домен не разблокирован — показываем максимальный прогресс среди экипированных
     equipped = gacha.get_equipped(user_id)
     best = 0
     has_master = False
@@ -194,7 +184,6 @@ def main_keyboard(user_id: int):
                         f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
                         callback_data=f"tech:{i}",
                     )])
-        # Кнопка домена — всегда видна в бою
         dom_text, dom_cb = _domain_button(user_id)
         rows.append([InlineKeyboardButton(dom_text, callback_data=dom_cb)])
         rows.append([
@@ -2008,6 +1997,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "emoji": boss["emoji"],
             "rarity": "Особый класс",
             "curse_class": "Особый класс",
+            "defense": boss.get("defense", 0.0),
             "drop_item": None,
             "drop_rarity": None,
         }

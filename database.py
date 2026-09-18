@@ -97,13 +97,15 @@ def init_db():
     _ensure_column(conn, "players", "dmg_buff_turns", "dmg_buff_turns INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "players", "dmg_buff_mult", "dmg_buff_mult REAL NOT NULL DEFAULT 1.0")
 
-    # --- Миграция encounters: класс проклятия, уникальный дроп, эффекты ---
+    # --- Миграция encounters: класс проклятия, дроп, эффекты, домен ---
     _ensure_column(conn, "encounters", "curse_class", "curse_class TEXT")
     _ensure_column(conn, "encounters", "drop_item", "drop_item TEXT")
     _ensure_column(conn, "encounters", "drop_rarity", "drop_rarity TEXT")
     _ensure_column(conn, "encounters", "stun_turns", "stun_turns INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "bleed_turns", "bleed_turns INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "bleed_dmg", "bleed_dmg INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "encounters", "domain_key", "domain_key TEXT")
+    _ensure_column(conn, "encounters", "domain_turns", "domain_turns INTEGER NOT NULL DEFAULT 0")
 
     # --- Оружие ---
     cur.execute("""
@@ -308,8 +310,7 @@ def add_exp_and_level(user_id: int, amount: int):
         ce_control += CE_CONTROL_PER_LEVEL
         leveled += 1
 
-    # Достигли капа — не позволяем опыту переполняться сверх порога,
-    # иначе после снятия капа игрок мгновенно прыгнет на много уровней.
+    # Достигли капа — не позволяем опыту переполняться сверх порога.
     if level >= max_level:
         exp = min(exp, level * EXP_BASE - 1)
 
@@ -366,8 +367,9 @@ def set_encounter(user_id: int, district_id: str, monster: dict):
     conn.execute(
         """INSERT INTO encounters
            (user_id, biome_id, monster_name, hp, max_hp, dmg_min, dmg_max, emoji, rarity,
-            spawned_at, curse_class, drop_item, drop_rarity, stun_turns, bleed_turns, bleed_dmg)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0)""",
+            spawned_at, curse_class, drop_item, drop_rarity, stun_turns, bleed_turns, bleed_dmg,
+            domain_key, domain_turns)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, 0)""",
         (
             user_id, district_id, monster["name"], monster["hp"], monster["hp"],
             monster["dmg_min"], monster["dmg_max"], monster["emoji"], monster["rarity"],
@@ -415,10 +417,66 @@ def set_encounter_status(user_id: int, stun_turns: int = None, bleed_turns: int 
     conn.commit()
 
 
+# ---------------- Расширения Территории (домены) ----------------
+
+def set_domain(user_id: int, domain_key: str, turns: int):
+    """Активирует домен на N ходов у текущего encounter-а."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE encounters SET domain_key = ?, domain_turns = ? WHERE user_id = ?",
+        (domain_key, turns, user_id),
+    )
+    conn.commit()
+
+
+def get_domain(user_id: int) -> tuple[str | None, int]:
+    """Возвращает (domain_key, turns). Если домен не активен — (None, 0)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT domain_key, domain_turns FROM encounters WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return (None, 0)
+    return (row["domain_key"], row["domain_turns"] or 0)
+
+
+def decrement_domain(user_id: int) -> tuple[str | None, int]:
+    """Уменьшает счётчик ходов домена на 1. Возвращает новое состояние."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT domain_key, domain_turns FROM encounters WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row or not row["domain_key"]:
+        return (None, 0)
+    new_turns = max(0, (row["domain_turns"] or 0) - 1)
+    if new_turns == 0:
+        conn.execute(
+            "UPDATE encounters SET domain_key = NULL, domain_turns = 0 WHERE user_id = ?",
+            (user_id,),
+        )
+        conn.commit()
+        return (None, 0)
+    conn.execute(
+        "UPDATE encounters SET domain_turns = ? WHERE user_id = ?",
+        (new_turns, user_id),
+    )
+    conn.commit()
+    return (row["domain_key"], new_turns)
+
+
+def clear_domain(user_id: int):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE encounters SET domain_key = NULL, domain_turns = 0 WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.commit()
+
+
 # ---------------- Врождённые техники ----------------
 
 def add_player_technique(user_id: int, technique_name: str, rarity: str) -> bool:
-    """Добавляет технику в коллекцию. Возвращает False, если уже была изучена (дубликат)."""
+    """Добавляет технику в коллекцию. Возвращает False, если уже была изучена."""
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -683,6 +741,12 @@ def get_vip_until(user_id: int) -> int:
 
 def has_vip(user_id: int) -> bool:
     return get_vip_until(user_id) > 0
+
+
+def vip_mult(user_id: int) -> float:
+    """Множитель наград: 2.0 для VIP, иначе 1.0.
+    Используется в combat, raid, quests, story."""
+    return 2.0 if has_vip(user_id) else 1.0
 
 
 def add_vip_days(user_id: int, days: int):

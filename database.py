@@ -107,6 +107,15 @@ def init_db():
     _ensure_column(conn, "encounters", "domain_key", "domain_key TEXT")
     _ensure_column(conn, "encounters", "domain_turns", "domain_turns INTEGER NOT NULL DEFAULT 0")
 
+    # --- Миграция encounters: счётчики заряда домена (условие активации) ---
+    _ensure_column(conn, "encounters", "charge_dmg_dealt", "charge_dmg_dealt INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "encounters", "charge_dmg_taken", "charge_dmg_taken INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "encounters", "charge_tech_uses", "charge_tech_uses INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "encounters", "charge_black_flash", "charge_black_flash INTEGER NOT NULL DEFAULT 0")
+
+    # --- Миграция encounters: счётчик активаций домена в текущем бою ---
+    _ensure_column(conn, "encounters", "domain_uses_in_battle", "domain_uses_in_battle INTEGER NOT NULL DEFAULT 0")
+
     # --- Миграция player_techniques: счётчик использований для доменов ---
     _ensure_column(conn, "player_techniques", "uses", "uses INTEGER NOT NULL DEFAULT 0")
 
@@ -289,7 +298,6 @@ def add_exp_and_level(user_id: int, amount: int):
     cur.execute("SELECT level, exp, max_hp, max_ce, ce_control FROM players WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
 
-    # Потолок уровня по сюжету (без импорта story.py, чтобы избежать цикличности).
     max_level = 20
     try:
         cur.execute("SELECT chapter_idx, finished FROM player_story WHERE user_id = ?", (user_id,))
@@ -298,7 +306,6 @@ def add_exp_and_level(user_id: int, amount: int):
             completed = 6 if sr["finished"] else sr["chapter_idx"]
             max_level = 20 + 20 * completed
     except sqlite3.OperationalError:
-        # Таблица player_story ещё не создана — считаем, что глав не пройдено.
         pass
 
     level, exp = row["level"], row["exp"] + amount
@@ -313,7 +320,6 @@ def add_exp_and_level(user_id: int, amount: int):
         ce_control += CE_CONTROL_PER_LEVEL
         leveled += 1
 
-    # Достигли капа — не позволяем опыту переполняться сверх порога.
     if level >= max_level:
         exp = min(exp, level * EXP_BASE - 1)
 
@@ -371,8 +377,9 @@ def set_encounter(user_id: int, district_id: str, monster: dict):
         """INSERT INTO encounters
            (user_id, biome_id, monster_name, hp, max_hp, dmg_min, dmg_max, emoji, rarity,
             spawned_at, curse_class, drop_item, drop_rarity, stun_turns, bleed_turns, bleed_dmg,
-            domain_key, domain_turns)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, 0)""",
+            domain_key, domain_turns, charge_dmg_dealt, charge_dmg_taken,
+            charge_tech_uses, charge_black_flash, domain_uses_in_battle)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, NULL, 0, 0, 0, 0, 0, 0)""",
         (
             user_id, district_id, monster["name"], monster["hp"], monster["hp"],
             monster["dmg_min"], monster["dmg_max"], monster["emoji"], monster["rarity"],
@@ -476,10 +483,92 @@ def clear_domain(user_id: int):
     conn.commit()
 
 
+# ---------------- Заряд домена (счётчики условия активации) ----------------
+
+def get_charges(user_id: int) -> dict:
+    """Возвращает текущие счётчики заряда в бою.
+    {dmg_dealt, dmg_taken, tech_uses, black_flash}. Все 0, если нет боя."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT charge_dmg_dealt, charge_dmg_taken, charge_tech_uses, charge_black_flash "
+        "FROM encounters WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"dmg_dealt": 0, "dmg_taken": 0, "tech_uses": 0, "black_flash": 0}
+    return {
+        "dmg_dealt": row["charge_dmg_dealt"] or 0,
+        "dmg_taken": row["charge_dmg_taken"] or 0,
+        "tech_uses": row["charge_tech_uses"] or 0,
+        "black_flash": row["charge_black_flash"] or 0,
+    }
+
+
+def add_charge(user_id: int, field: str, amount: int):
+    """Увеличивает нужный счётчик заряда. field: dmg_dealt / dmg_taken / tech_uses / black_flash."""
+    mapping = {
+        "dmg_dealt": "charge_dmg_dealt",
+        "dmg_taken": "charge_dmg_taken",
+        "tech_uses": "charge_tech_uses",
+        "black_flash": "charge_black_flash",
+    }
+    col = mapping.get(field)
+    if not col or amount <= 0:
+        return
+    conn = get_conn()
+    conn.execute(
+        f"UPDATE encounters SET {col} = {col} + ? WHERE user_id = ?",
+        (amount, user_id),
+    )
+    conn.commit()
+
+
+def reset_charges(user_id: int):
+    """Обнуляет все счётчики заряда в текущем бою."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE encounters SET charge_dmg_dealt = 0, charge_dmg_taken = 0, "
+        "charge_tech_uses = 0, charge_black_flash = 0 WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.commit()
+
+
+# ---------------- Счётчик активаций домена в бою ----------------
+
+def get_domain_uses_in_battle(user_id: int) -> int:
+    """Сколько раз игрок активировал домен в текущем бою.
+    0 — если боя нет."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT domain_uses_in_battle FROM encounters WHERE user_id = ?",
+        (user_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return 0
+    return row["domain_uses_in_battle"] or 0
+
+
+def inc_domain_uses_in_battle(user_id: int) -> int:
+    """Увеличивает счётчик активаций домена в текущем бою на 1.
+    Возвращает НОВОЕ значение."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE encounters SET domain_uses_in_battle = domain_uses_in_battle + 1 "
+        "WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.commit()
+    return get_domain_uses_in_battle(user_id)
+
+
 # ---------------- Врождённые техники ----------------
 
 def add_player_technique(user_id: int, technique_name: str, rarity: str) -> bool:
-    """Добавляет технику в коллекцию. Возвращает False, если уже была изучена."""
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -514,8 +603,6 @@ def has_technique(user_id: int, technique_name: str) -> bool:
 
 
 def inc_technique_uses(user_id: int, technique_name: str) -> int:
-    """Увеличивает счётчик использований техники на 1.
-    Возвращает новое значение. Если техники нет — 0."""
     conn = get_conn()
     conn.execute(
         "UPDATE player_techniques SET uses = uses + 1 "
@@ -533,7 +620,6 @@ def inc_technique_uses(user_id: int, technique_name: str) -> int:
 
 
 def get_technique_uses(user_id: int, technique_name: str) -> int:
-    """Сколько раз игрок использовал эту технику. 0 — если техники нет."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -545,7 +631,6 @@ def get_technique_uses(user_id: int, technique_name: str) -> int:
 
 
 def get_equipped_techniques(user_id: int):
-    """Список [(slot, technique_name), ...] отсортированный по слоту."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -669,7 +754,6 @@ def get_equipped_weapon_name(user_id: int) -> str | None:
 # ============================================================
 
 def add_player_buff(user_id: int, stat: str, value: float, duration_seconds: int):
-    """Перезаписывает бафф того же стата (обновляет значение и время)."""
     conn = get_conn()
     expires_at = int(time.time()) + duration_seconds
     conn.execute(
@@ -682,7 +766,6 @@ def add_player_buff(user_id: int, stat: str, value: float, duration_seconds: int
 
 
 def get_active_buffs(user_id: int) -> list[dict]:
-    """Возвращает активные баффы, заодно удаляя истёкшие."""
     conn = get_conn()
     now = int(time.time())
     conn.execute(
@@ -703,7 +786,6 @@ def get_active_buffs(user_id: int) -> list[dict]:
 
 
 def get_buff_value(user_id: int, stat: str) -> float:
-    """0.0, если баффа нет."""
     for b in get_active_buffs(user_id):
         if b["stat"] == stat:
             return b["value"]
@@ -711,7 +793,6 @@ def get_buff_value(user_id: int, stat: str) -> float:
 
 
 def clear_expired_buffs() -> int:
-    """Удаляет все истёкшие баффы у всех игроков. Возвращает число удалённых."""
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
@@ -725,7 +806,6 @@ def clear_expired_buffs() -> int:
 # ============================================================
 
 def get_pity(user_id: int) -> int:
-    """Сколько круток подряд прошло без легендарки/мифика."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT pity_count FROM player_pity WHERE user_id = ?", (user_id,))
@@ -734,7 +814,6 @@ def get_pity(user_id: int) -> int:
 
 
 def inc_pity(user_id: int) -> int:
-    """Увеличивает счётчик pity на 1. Возвращает новое значение."""
     conn = get_conn()
     conn.execute(
         "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 1) "
@@ -746,7 +825,6 @@ def inc_pity(user_id: int) -> int:
 
 
 def reset_pity(user_id: int):
-    """Сбрасывает pity после выпадения легендарки/мифика."""
     conn = get_conn()
     conn.execute(
         "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 0) "
@@ -761,7 +839,6 @@ def reset_pity(user_id: int):
 # ============================================================
 
 def get_vip_until(user_id: int) -> int:
-    """unix-time окончания VIP или 0, если VIP нет."""
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT expires_at FROM player_vip WHERE user_id = ?", (user_id,))
@@ -778,13 +855,10 @@ def has_vip(user_id: int) -> bool:
 
 
 def vip_mult(user_id: int) -> float:
-    """Множитель наград: 2.0 для VIP, иначе 1.0.
-    Используется в combat, raid, quests, story."""
     return 2.0 if has_vip(user_id) else 1.0
 
 
 def add_vip_days(user_id: int, days: int):
-    """Добавляет дни VIP. Если VIP активен — продлевает от текущей даты окончания."""
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
@@ -805,7 +879,6 @@ def add_vip_days(user_id: int, days: int):
 # ============================================================
 
 def add_ce_type(user_id: int, ce_key: str, rarity: str) -> bool:
-    """True — если новый. False — если уже был."""
     conn = get_conn()
     cur = conn.cursor()
     try:

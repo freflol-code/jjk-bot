@@ -9,6 +9,8 @@ story.py — сюжетные главы «Магической Битвы: То
 
 HP мобов и боссов в temp-локациях ослаблены на 25% относительно базового баланса.
 
+VIP: даёт ×2 к золоту и опыту за завершение главы.
+
 ОГРАНИЧЕНИЕ УРОВНЯ:
 Пока игрок не прошёл Главу 1, его уровень не может подняться выше 20.
 За каждую пройденную главу потолок увеличивается на 20.
@@ -710,6 +712,10 @@ def _check_have_item_steps(user_id: int, chapter: dict, progress: dict) -> dict:
 
 
 def check_and_finish(user_id: int) -> dict | None:
+    """Проверяет выполнение всех шагов главы.
+    VIP даёт ×2 к золоту и опыту за главу.
+    Пальцы Сукуны и другие have_item не удваиваются — они просто
+    проверяются на наличие, а не выдаются через эту функцию."""
     chapter = get_current_chapter(user_id)
     if not chapter:
         return None
@@ -723,8 +729,12 @@ def check_and_finish(user_id: int) -> dict | None:
         if progress.get(str(i), 0) < step["goal"]:
             return None
 
-    database.add_gold(user_id, chapter["reward_gold"])
-    new_level, leveled = database.add_exp_and_level(user_id, chapter["reward_exp"])
+    vip = database.vip_mult(user_id)
+    gold = int(chapter["reward_gold"] * vip)
+    exp = int(chapter["reward_exp"] * vip)
+
+    database.add_gold(user_id, gold)
+    new_level, leveled = database.add_exp_and_level(user_id, exp)
 
     for step in chapter["steps"]:
         if step["type"] == "have_item":
@@ -743,8 +753,9 @@ def check_and_finish(user_id: int) -> dict | None:
     return {
         "completed_chapter": chapter,
         "next_chapter": next_chapter,
-        "reward_gold": chapter["reward_gold"],
-        "reward_exp": chapter["reward_exp"],
+        "reward_gold": gold,
+        "reward_exp": exp,
+        "vip_applied": vip > 1.0,
         "leveled": leveled,
         "new_level": new_level,
         "new_max_level": get_max_level(user_id),
@@ -798,6 +809,7 @@ def format_story_screen(user_id: int) -> str:
 
     lines.append("")
     lines.append(f"🎁 <b>Награда:</b> 💠 +{chapter['reward_gold']}, 🧬 +{chapter['reward_exp']}")
+    lines.append("<i>💎 VIP-игроки получают ×2 к награде за главу</i>")
 
     if player["level"] >= max_level:
         lines.append("")
@@ -818,7 +830,7 @@ def format_intro(chapter: dict) -> str:
 
 
 def format_completion(chapter: dict, reward_gold: int, reward_exp: int,
-                      leveled: bool, new_level) -> str:
+                      leveled: bool, new_level, vip_applied: bool = False) -> str:
     lines = [
         f"🏁 <b>Глава {chapter['num']} завершена!</b>",
         f"<i>{chapter['title']}</i>",
@@ -827,6 +839,8 @@ def format_completion(chapter: dict, reward_gold: int, reward_exp: int,
         "",
         f"💠 +{reward_gold} очков Ассоциации, 🧬 +{reward_exp} опыта",
     ]
+    if vip_applied:
+        lines.append("💎 VIP: награды ×2")
     if leveled:
         lines.append(f"🎉 <b>Уровень повышен до {new_level}!</b>")
     return "\n".join(lines)

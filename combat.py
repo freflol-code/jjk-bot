@@ -87,6 +87,10 @@ def _technique_damage(user_id: int, player, technique: dict) -> int:
 
 
 def _black_flash_chance(user_id: int) -> float:
+    # Крит невозможен без ПЭ — у Тоджи/Маки её нет.
+    eff = ce_types.get_effective_stats(user_id)
+    if eff["max_ce"] <= 0:
+        return 0.0
     w = equipment.get_bonuses(user_id)
     buff = database.get_buff_value(user_id, "crit_bonus")
     effects = ce_types.get_active_effects(user_id)
@@ -95,6 +99,9 @@ def _black_flash_chance(user_id: int) -> float:
 
 def _regen_ce(user_id: int, player, mult: float = 1.0):
     eff = ce_types.get_effective_stats(user_id, player)
+    if eff["max_ce"] <= 0:
+        # Тоджи/Маки — ПЭ нет, реген не работает
+        return 0
     regen = int(_ce_regen_amount(user_id, player) * mult)
     new_ce = min(eff["max_ce"], player["ce"] + regen)
     database.update_player_ce(user_id, new_ce)
@@ -311,7 +318,7 @@ def _victory(user_id: int, encounter, log: list) -> dict:
 
 def _death(user_id: int, player, log: list) -> dict:
     eff = ce_types.get_effective_stats(user_id, player)
-    respawn_hp = max(1, eff["max_hp"] // 2)
+    respawn_hp = max(1, eff["max_hp"] // 2) if eff["max_hp"] > 0 else 1
     database.update_player_hp(user_id, respawn_hp)
     database.clear_encounter(user_id)
     database.update_player_x(user_id, 0)
@@ -342,16 +349,22 @@ def _curse_turn(user_id: int, player, encounter, log: list,
     if hp <= 0:
         return None
 
+    effects = ce_types.get_active_effects(user_id)
+    dodge_bonus = effects.get("dodge_chance", 0.0)
+    total_miss = min(0.90, MONSTER_MISS_CHANCE + dodge_bonus)
+
     if encounter["stun_turns"] > 0:
         log.append(f"😵 {encounter['monster_name']} оглушено и пропускает ход!")
         database.set_encounter_status(user_id, stun_turns=encounter["stun_turns"] - 1)
-    elif random.random() < MONSTER_MISS_CHANCE:
-        log.append(f"🛡 {encounter['monster_name']} промахнулось!")
+    elif random.random() < total_miss:
+        if dodge_bonus > 0 and random.random() < dodge_bonus / total_miss:
+            log.append(f"🌀 <b>Ты уклонился</b> от атаки {encounter['monster_name']}!")
+        else:
+            log.append(f"🛡 {encounter['monster_name']} промахнулось!")
     else:
         raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
         reduction = _defense_reduction(user_id, player)
 
-        effects = ce_types.get_active_effects(user_id)
         defense_mult = effects.get("defense_mult", 1.0)
 
         mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult)
@@ -417,7 +430,7 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
 
         verb = f"использовал «{technique_name}»" if technique else "атаковал"
         if black_flash:
-            log.append(f"⚫⚡ <b>ЧЁРНАЯ ВСПЫШКА!</b> Ты {verb} с искажением ПЭ и нанёс {dmg} урона.")
+            log.append(f"⚫⚡ <b>КРИТ!</b> Ты {verb} с искажением ПЭ и нанёс {dmg} урона.")
             quests.add_progress(user_id, "crit")
             effect_key = "black_flash"
         else:
@@ -432,7 +445,7 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     if black_flash:
         if random.random() < BLACK_FLASH_STUN_CHANCE:
             database.set_encounter_status(user_id, stun_turns=1)
-            log.append("😵 Проклятие оглушено на 1 ход от Чёрной Вспышки!")
+            log.append("😵 Проклятие оглушено на 1 ход от крита!")
             quests.add_progress(user_id, "stun_apply")
 
     if dmg > 0 and technique and technique.get("effect"):
@@ -513,7 +526,8 @@ def defend(user_id: int) -> dict:
 
     fresh_player = database.get_or_create_player(user_id, "")
     regen = _regen_ce(user_id, fresh_player, mult=DEFEND_CE_REGEN_MULT)
-    log.append(f"💠 Восстановлено {regen} ПЭ (x{DEFEND_CE_REGEN_MULT:.0f} за защиту).")
+    if regen > 0:
+        log.append(f"💠 Восстановлено {regen} ПЭ (x{DEFEND_CE_REGEN_MULT:.0f} за защиту).")
 
     return {"status": "ongoing", "log": log, "effect": "defend"}
 

@@ -1149,7 +1149,10 @@ def _vip_description_text(user_id: int) -> str:
     lines.append("<b>Что даёт VIP:</b>")
     lines.append("  • 💰 ×2 очков Ассоциации с боёв")
     lines.append("  • 🧬 ×2 опыта с боёв")
-    lines.append("  • ⚡ Работает во всех районах и рейдах")
+    lines.append("  • 🎁 ×2 к дропу с обычных проклятий и боссов")
+    lines.append("  • 📋 ×2 к наградам за задания (ежедневные и недельные)")
+    lines.append("  • 📖 ×2 к наградам за сюжетные главы")
+    lines.append("  • ⚡ Работает во всех районах, рейдах и главах")
     lines.append("  • 🎁 Бонус складывается с баффами")
     lines.append("")
     lines.append(f"<b>Стоимость:</b> {VIP_PRICE_STARS} ⭐ за {VIP_DURATION_DAYS} дней")
@@ -1173,8 +1176,9 @@ async def vip_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat_id=user_id,
             title=f"VIP на {VIP_DURATION_DAYS} дней",
             description=(
-                f"×2 золото и ×2 опыт с боёв на {VIP_DURATION_DAYS} дней. "
-                f"Работает во всех районах и рейдах. Продление возможно в любой момент."
+                f"×2 золото, опыт, дроп, награды за задания и сюжетные главы "
+                f"на {VIP_DURATION_DAYS} дней. Работает во всех районах и рейдах. "
+                f"Продление возможно в любой момент."
             ),
             payload=VIP_PAYLOAD,
             provider_token="",
@@ -1259,6 +1263,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 event["completed_chapter"],
                 event["reward_gold"], event["reward_exp"],
                 event["leveled"], event["new_level"],
+                event.get("vip_applied", False),
             )
             if event["next_chapter"]:
                 text += "\n\n" + story.format_intro(event["next_chapter"])
@@ -1703,6 +1708,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 event["completed_chapter"],
                 event["reward_gold"], event["reward_exp"],
                 event["leveled"], event["new_level"],
+                event.get("vip_applied", False),
             )
             if event["next_chapter"]:
                 text += "\n\n" + story.format_intro(event["next_chapter"])
@@ -1937,7 +1943,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = (
             "📋 <b>Задания Годжо</b>\n\n"
             "Годжо выдаёт 3 ежедневных и 3 недельных задания.\n"
-            "Прогресс считается автоматически, награду нужно забрать вручную.\n\n"
+            "Прогресс считается автоматически, награду нужно забрать вручную.\n"
+            "💎 VIP даёт ×2 к наградам за задания.\n\n"
             "<i>Годжо: «Работай — и я подкину тебе очков на крутки.»</i>"
         )
         await render(query, context, text, quests_menu_keyboard())

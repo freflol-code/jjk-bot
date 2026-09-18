@@ -15,6 +15,7 @@ raid.py — рейды на Сукуну для 1-5 игроков.
 - Расширения Территории: на рейд может быть активен ТОЛЬКО ОДИН домен.
   Кто первый активировал — тот владелец. Массовые домены (aoe) бьют
   и союзников, кроме владельца.
+- Домен разблокируется после DOMAIN_UNLOCK_USES использований мастер-техники.
 - Победа/поражение заканчивают рейд, все возвращаются в школу (X=0).
 """
 import json
@@ -23,6 +24,7 @@ import time
 
 import database
 import gacha
+from config import DOMAIN_UNLOCK_USES
 from domains_data import DOMAINS
 from combat import DOMAIN_EFFECTS, _find_domain_by_technique
 
@@ -189,13 +191,30 @@ def _clear_raid_domain(raid_id: int):
 
 def _activate_raid_domain(raid: dict, user_id: int, technique_name: str):
     """Пытается активировать домен. Если на рейде уже есть активный домен —
-    отказ, даже если чужой."""
+    отказ, даже если чужой. Домен откроется только после DOMAIN_UNLOCK_USES
+    использований мастер-техники."""
     technique = gacha.get_technique(technique_name)
     if not technique or not technique.get("has_domain"):
         return
+
+    uses = database.inc_technique_uses(user_id, technique_name)
+    nick = database.get_or_create_player(user_id, "")["username"] or f"Игрок {user_id}"
+
+    if uses < DOMAIN_UNLOCK_USES:
+        raid["log"].append(f"   🌀 {nick}: Расширение Территории {uses}/{DOMAIN_UNLOCK_USES}")
+        return
+
     domain_key = _find_domain_by_technique(technique_name)
     if not domain_key:
         return
+
+    # Первое использование после разблокировки — особое сообщение
+    if uses == DOMAIN_UNLOCK_USES:
+        dd = DOMAINS.get(domain_key, {})
+        raid["log"].append(
+            f"   🎉 <b>{nick}: Расширение Территории разблокировано!</b> "
+            f"{dd.get('emoji', '')} {dd.get('name', '')}"
+        )
 
     owner_id, cur_key, cur_turns = _get_raid_domain(raid["id"])
     if cur_key:
@@ -207,7 +226,6 @@ def _activate_raid_domain(raid: dict, user_id: int, technique_name: str):
                 database.get_or_create_player(owner_id, "")["username"]
                 or f"Игрок {owner_id}"
             )
-        nick = database.get_or_create_player(user_id, "")["username"] or f"Игрок {user_id}"
         raid["log"].append(
             f"   ⚠️ <b>{nick}</b> не может войти в Расширение: "
             f"на арене уже <b>{cur_name}</b> ({owner_nick}, {cur_turns} х.)"
@@ -216,7 +234,6 @@ def _activate_raid_domain(raid: dict, user_id: int, technique_name: str):
 
     domain_data = DOMAINS[domain_key]
     effect = DOMAIN_EFFECTS.get(domain_key, {})
-    nick = database.get_or_create_player(user_id, "")["username"] or f"Игрок {user_id}"
 
     if effect.get("gamble"):
         if random.random() < 0.5:
@@ -661,8 +678,6 @@ def player_attack(raid_id: int, user_id: int, technique_name: str | None = None)
         verb = "атаковал"
 
     # Множитель активного домена — работает для ВСЕХ игроков, не только владельца.
-    # Владелец — тот, кто поставил домен, получает свой dmg_mult. Союзники — тоже,
-    # но по задумке это бафф владельца. В рейде эффект общий, что логично.
     _owner, dk, dt = _get_raid_domain(raid_id)
     if dk and dt > 0:
         deff = DOMAIN_EFFECTS.get(dk, {})

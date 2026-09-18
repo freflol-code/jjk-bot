@@ -132,6 +132,20 @@ def init_db():
         )
     """)
 
+    # --- Pity-система гачи и VIP ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_pity (
+            user_id    INTEGER PRIMARY KEY,
+            pity_count INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_vip (
+            user_id    INTEGER PRIMARY KEY,
+            expires_at INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+
     conn.commit()
 
 
@@ -570,3 +584,77 @@ def clear_expired_buffs() -> int:
     cur.execute("DELETE FROM player_buffs WHERE expires_at <= ?", (now,))
     conn.commit()
     return cur.rowcount
+
+
+# ============================================================
+#  PITY-СИСТЕМА ГАЧИ (гарант через N круток)
+# ============================================================
+
+def get_pity(user_id: int) -> int:
+    """Сколько круток подряд прошло без легендарки/мифика."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT pity_count FROM player_pity WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["pity_count"] if row else 0
+
+
+def inc_pity(user_id: int) -> int:
+    """Увеличивает счётчик pity на 1. Возвращает новое значение."""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 1) "
+        "ON CONFLICT(user_id) DO UPDATE SET pity_count = pity_count + 1",
+        (user_id,),
+    )
+    conn.commit()
+    return get_pity(user_id)
+
+
+def reset_pity(user_id: int):
+    """Сбрасывает pity после выпадения легендарки/мифика."""
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 0) "
+        "ON CONFLICT(user_id) DO UPDATE SET pity_count = 0",
+        (user_id,),
+    )
+    conn.commit()
+
+
+# ============================================================
+#  VIP (подписка за Telegram Stars)
+# ============================================================
+
+def get_vip_until(user_id: int) -> int:
+    """unix-time окончания VIP или 0, если VIP нет."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT expires_at FROM player_vip WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return 0
+    if row["expires_at"] <= int(time.time()):
+        return 0
+    return row["expires_at"]
+
+
+def has_vip(user_id: int) -> bool:
+    return get_vip_until(user_id) > 0
+
+
+def add_vip_days(user_id: int, days: int):
+    """Добавляет дни VIP. Если VIP активен — продлевает от текущей даты окончания."""
+    conn = get_conn()
+    cur = conn.cursor()
+    now = int(time.time())
+    cur.execute("SELECT expires_at FROM player_vip WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    base = max(now, row["expires_at"] if row else 0)
+    new_expires = base + days * 86400
+    conn.execute(
+        "INSERT INTO player_vip (user_id, expires_at) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET expires_at = excluded.expires_at",
+        (user_id, new_expires),
+    )
+    conn.commit()

@@ -33,7 +33,13 @@ import equipment
 import leaderboard
 import story
 import raid
+import ce_types
 from config import VIP_PRICE_STARS, VIP_DURATION_DAYS, VIP_PAYLOAD
+from ce_types_data import (
+    CE_TYPES, CLANS, HEAVENLY_RESTRICTIONS,
+    CE_GACHA_ROLL_COST, CE_GACHA_ROLL_COST_X10,
+    CLAN_GACHA_ROLL_COST, CLAN_GACHA_ROLL_COST_X10,
+)
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -126,6 +132,8 @@ def puzzle_keyboard(puzzle_id: str) -> InlineKeyboardMarkup:
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="story_temp_back")])
     return InlineKeyboardMarkup(rows)
 
+
+# ---------------------- Клавиатуры ----------------------
 
 def main_keyboard(user_id: int):
     in_combat = database.get_encounter(user_id) is not None
@@ -288,6 +296,115 @@ def gacha_rarity_keyboard(user_id: int, short: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def gacha_hub_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌀 Техники", callback_data="gacha_menu_from_shop")],
+        [InlineKeyboardButton("🩸 Кланы и Проклятия Небес", callback_data="gacha_clan_menu")],
+        [InlineKeyboardButton("⚡ Типы Проклятой Энергии", callback_data="gacha_ce_menu")],
+        [InlineKeyboardButton("⬅️ Выйти", callback_data="back_to_game")],
+    ])
+
+
+def gacha_clan_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(f"🎰 1 ({CLAN_GACHA_ROLL_COST}💠)", callback_data="gacha_clan_roll1"),
+            InlineKeyboardButton(f"🎰 10 ({CLAN_GACHA_ROLL_COST_X10}💠)", callback_data="gacha_clan_roll10"),
+        ],
+        [InlineKeyboardButton("📖 Мои кланы", callback_data="gacha_my_clans")],
+        [InlineKeyboardButton("🌠 Мои Проклятия Небес", callback_data="gacha_my_heavenly")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_hub")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def gacha_ce_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(f"🎰 1 ({CE_GACHA_ROLL_COST}💠)", callback_data="gacha_ce_roll1"),
+            InlineKeyboardButton(f"🎰 10 ({CE_GACHA_ROLL_COST_X10}💠)", callback_data="gacha_ce_roll10"),
+        ],
+        [InlineKeyboardButton("📖 Мои типы ПЭ", callback_data="gacha_my_ce")],
+        [InlineKeyboardButton("⬅️ Назад", callback_data="gacha_hub")],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def my_clans_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    owned = database.get_clans(user_id)
+    active = database.get_active_clan(user_id)
+    rows = []
+    for row in owned:
+        key = row["clan_key"]
+        c = CLANS.get(key)
+        if not c:
+            continue
+        if key == active:
+            rows.append([InlineKeyboardButton(
+                f"✅ {c['emoji']} {c['name']} (снять)",
+                callback_data="clan_clear",
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                f"{c['emoji']} {c['name']} — надеть",
+                callback_data=f"clan_set:{key}",
+            )])
+    if not owned:
+        rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_clan_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def my_ce_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    owned = database.get_ce_types(user_id)
+    active = database.get_active_ce_type(user_id)
+    rows = []
+    for row in owned:
+        key = row["ce_key"]
+        t = CE_TYPES.get(key)
+        if not t:
+            continue
+        if key == active:
+            rows.append([InlineKeyboardButton(
+                f"✅ {t['emoji']} {t['name']} (снять)",
+                callback_data="ce_clear",
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                f"{t['emoji']} {t['name']} ({t['rarity']}) — надеть",
+                callback_data=f"ce_set:{key}",
+            )])
+    if not owned:
+        rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_ce_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
+def my_heavenly_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    owned = database.get_heavenly_restrictions(user_id)
+    active = database.get_active_heavenly(user_id)
+    rows = []
+    for row in owned:
+        key = row["heavenly_key"]
+        h = HEAVENLY_RESTRICTIONS.get(key)
+        if not h:
+            continue
+        if key == active:
+            rows.append([InlineKeyboardButton(
+                f"✅ {h['emoji']} {h['name']} (снять)",
+                callback_data="heavenly_clear",
+            )])
+        else:
+            rows.append([InlineKeyboardButton(
+                f"{h['emoji']} {h['name']} — надеть",
+                callback_data=f"heavenly_set:{key}",
+            )])
+    if not owned:
+        rows.append([InlineKeyboardButton("— пусто —", callback_data="noop")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_clan_menu")])
+    return InlineKeyboardMarkup(rows)
+
+
 def inventory_keyboard(user_id: int):
     items = database.get_inventory(user_id)
     rows = []
@@ -314,7 +431,7 @@ def shop_menu_keyboard(npc_id: str):
             InlineKeyboardButton("💰 Продать", callback_data=f"shop_sell:{npc_id}"),
         ],
         [InlineKeyboardButton("🏴‍☠️ Склад проклятого оружия", callback_data=f"gear_menu:{npc_id}")],
-        [InlineKeyboardButton("🌀 Гача техник", callback_data="gacha_menu_from_shop")],
+        [InlineKeyboardButton("🎰 Гача", callback_data="gacha_hub")],
         [InlineKeyboardButton("⬅️ Выйти", callback_data="back_to_game")],
     ])
 
@@ -469,8 +586,8 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         )])
     else:
         rows.append([InlineKeyboardButton(
-            f"💎 Купить VIP ({VIP_PRICE_STARS}⭐ / {VIP_DURATION_DAYS} дн.)",
-            callback_data="vip_buy",
+            "💎 VIP — узнать подробнее",
+            callback_data="vip_info",
         )])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
     return InlineKeyboardMarkup(rows)
@@ -531,6 +648,8 @@ def raid_finished_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("⬅️ В меню", callback_data="back_to_game")],
     ])
 
+
+# ---------------------- Рендер ----------------------
 
 def truncate_caption(text: str, limit: int = CAPTION_LIMIT) -> str:
     if len(text) <= limit:
@@ -621,6 +740,8 @@ async def send_effect_gif(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
         logger.warning(f"Не удалось показать эффект {effect_key}: {e}")
 
 
+# ---------------------- Тексты ----------------------
+
 def location_text(user_id: int, x: int) -> str:
     district = get_district_by_x(x)
     player = database.get_or_create_player(user_id, "")
@@ -653,11 +774,13 @@ def location_text(user_id: int, x: int) -> str:
         if msg:
             story_hint = f"\n\n{msg}"
 
+    eff = ce_types.get_effective_stats(user_id, player)
+
     return (
         f"{district['emoji']} <b>{district['name']}</b>\n"
         f"<i>{district['description']}</i>\n\n"
         f"📍 {x}\n"
-        f"❤️ {player['hp']}/{player['max_hp']}  ·  🔵 {player['ce']}/{player['max_ce']}  ·  💠 {player['gold']}\n"
+        f"❤️ {eff['hp']}/{eff['max_hp']}  ·  🔵 {eff['ce']}/{eff['max_ce']}  ·  💠 {player['gold']}\n"
         f"🧬 {player['level']}  ·  🎚 {player['ce_control']}"
         f"{weapon_line}"
         f"{buffs_line}\n"
@@ -707,6 +830,34 @@ def gacha_menu_text(user_id: int) -> str:
     )
 
 
+def gacha_clan_menu_text(user_id: int) -> str:
+    player = database.get_or_create_player(user_id, "")
+    return (
+        "🩸 <b>Гача кланов и Проклятий Небес</b>\n\n"
+        f"💠 У тебя: {player['gold']} очков Ассоциации\n\n"
+        "<b>Шансы:</b>\n"
+        "  🌠 Проклятие Небес — <b>15%</b>\n"
+        "  🩸 Обычный клан — <b>10%</b>\n"
+        "  💨 Пусто — 75%\n\n"
+        "<i>Хакари: «Рискни — тут либо клан, либо проклятие, либо ничего.»</i>"
+    )
+
+
+def gacha_ce_menu_text(user_id: int) -> str:
+    player = database.get_or_create_player(user_id, "")
+    owned = database.get_ce_types(user_id)
+    return (
+        "⚡ <b>Гача типов Проклятой Энергии</b>\n\n"
+        f"💠 У тебя: {player['gold']} очков Ассоциации\n"
+        f"📖 Изучено типов: {len(owned)}\n\n"
+        "<b>Шансы по редкости:</b>\n"
+        "  ⚪ Обычная — 68%\n"
+        "  🟣 Эпическая — 26%\n"
+        "  🟠 Легендарная — 6%\n\n"
+        "<i>Хакари: «Каждому своя энергия. Некоторым — вообще никакой.»</i>"
+    )
+
+
 def profile_text(user_id: int) -> str:
     player = database.get_or_create_player(user_id, "")
     need = player["level"] * config.EXP_BASE
@@ -734,21 +885,45 @@ def profile_text(user_id: int) -> str:
     equipped_tech = gacha.get_equipped(user_id)
     weapons_owned = database.get_player_weapons(user_id)
 
+    ce_line = _ce_summary(user_id)
+    eff = ce_types.get_effective_stats(user_id, player)
+
     return (
         "👤 <b>Профиль шамана</b>\n\n"
         f"🧬 Уровень: <b>{player['level']}</b> ({player['exp']}/{need}) · потолок: {max_level}\n"
         f"🎚 Контроль ПЭ: <b>{player['ce_control']}</b>\n"
-        f"❤️ HP: {player['hp']}/{player['max_hp']}\n"
-        f"🔵 ПЭ: {player['ce']}/{player['max_ce']}\n"
+        f"❤️ HP: {eff['hp']}/{eff['max_hp']}\n"
+        f"🔵 ПЭ: {eff['ce']}/{eff['max_ce']}\n"
         f"💠 Очки Ассоциации: {player['gold']}\n\n"
         f"{weapon_line}\n"
         f"🌀 Техник изучено: {len(learned)} · в бою: {len(equipped_tech)}/{config.MAX_EQUIPPED_TECHNIQUES}\n"
         f"⚔️ Оружия в коллекции: {len(weapons_owned)}"
+        f"{ce_line}"
         f"{rank_line}"
         f"{buffs_line}"
         f"{cap_line}"
         + _vip_line(user_id)
     )
+
+
+def _ce_summary(user_id: int) -> str:
+    ce_key = database.get_active_ce_type(user_id)
+    clan_key = database.get_active_clan(user_id)
+    heavenly_key = database.get_active_heavenly(user_id)
+
+    lines = []
+    if ce_key and ce_key in CE_TYPES:
+        t = CE_TYPES[ce_key]
+        lines.append(f"{t['emoji']} ПЭ: {t['name']}")
+    if clan_key and clan_key in CLANS:
+        c = CLANS[clan_key]
+        lines.append(f"{c['emoji']} Клан: {c['name']}")
+    if heavenly_key and heavenly_key in HEAVENLY_RESTRICTIONS:
+        h = HEAVENLY_RESTRICTIONS[heavenly_key]
+        lines.append(f"{h['emoji']} {h['name']}")
+    if not lines:
+        return ""
+    return "\n" + " · ".join(lines)
 
 
 def _vip_line(user_id: int) -> str:
@@ -767,6 +942,8 @@ def _quests_done_text(done: list[dict]) -> str:
         lines.append(f"  {q['emoji']} {q['name']} — забери награду во вкладке «Задания»")
     return "\n".join(lines)
 
+
+# ---------------------- Хелперы рейда ----------------------
 
 async def _bot_username(context: ContextTypes.DEFAULT_TYPE) -> str | None:
     try:
@@ -826,6 +1003,8 @@ async def _notify_raid_players(context: ContextTypes.DEFAULT_TYPE,
         except Exception as e:
             logger.warning(f"Не удалось уведомить рейд-игрока {uid}: {e}")
 
+
+# ---------------------- Команды ----------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -951,6 +1130,37 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_html(body, reply_markup=kb_for(user.id))
 
 
+# ---------------------- VIP ----------------------
+
+def _vip_description_text(user_id: int) -> str:
+    until = database.get_vip_until(user_id)
+    is_active = until > 0
+
+    lines = ["💎 <b>VIP-статус</b>", ""]
+
+    if is_active:
+        days_left = (until - int(time.time())) // 86400
+        lines.append(f"✅ <b>Статус активен.</b> Осталось дней: <b>{days_left}</b>")
+        lines.append("")
+
+    lines.append("<b>Что даёт VIP:</b>")
+    lines.append("  • 💰 ×2 очков Ассоциации с боёв")
+    lines.append("  • 🧬 ×2 опыта с боёв")
+    lines.append("  • ⚡ Работает во всех районах и рейдах")
+    lines.append("  • 🎁 Бонус складывается с баффами")
+    lines.append("")
+    lines.append(f"<b>Стоимость:</b> {VIP_PRICE_STARS} ⭐ за {VIP_DURATION_DAYS} дней")
+    lines.append("")
+    lines.append("<i>Оплата через Telegram Stars. Продление возможно в любой момент — "
+                 "сроки суммируются.</i>")
+
+    if is_active:
+        lines.append("")
+        lines.append("<i>Ты можешь продлить VIP — дни добавятся к текущему сроку.</i>")
+
+    return "\n".join(lines)
+
+
 async def vip_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
@@ -959,7 +1169,10 @@ async def vip_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_invoice(
             chat_id=user_id,
             title=f"VIP на {VIP_DURATION_DAYS} дней",
-            description="×2 к золоту и опыту с боёв",
+            description=(
+                f"×2 золото и ×2 опыт с боёв на {VIP_DURATION_DAYS} дней. "
+                f"Работает во всех районах и рейдах. Продление возможно в любой момент."
+            ),
             payload=VIP_PAYLOAD,
             provider_token="",
             currency="XTR",
@@ -1002,19 +1215,27 @@ async def vip_info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     await query.answer()
-    until = database.get_vip_until(user_id)
-    if not until:
-        await render(query, context,
-                     "💎 VIP не активен. Купи в меню профиля.",
-                     kb_for(user_id))
-        return
-    days_left = (until - int(time.time())) // 86400
-    await render(query, context,
-                 f"💎 <b>VIP активен</b>\n\n"
-                 f"Осталось дней: <b>{days_left}</b>\n"
-                 f"Награды: ×2 к золоту и опыту.",
-                 profile_menu_keyboard(user_id))
 
+    is_active = database.has_vip(user_id)
+
+    kb_rows = []
+    if is_active:
+        kb_rows.append([InlineKeyboardButton(
+            f"💎 Продлить на {VIP_DURATION_DAYS} дней ({VIP_PRICE_STARS}⭐)",
+            callback_data="vip_buy",
+        )])
+    else:
+        kb_rows.append([InlineKeyboardButton(
+            f"💎 Купить VIP ({VIP_PRICE_STARS}⭐ / {VIP_DURATION_DAYS} дн.)",
+            callback_data="vip_buy",
+        )])
+    kb_rows.append([InlineKeyboardButton("⬅️ Назад в профиль", callback_data="profile_menu")])
+
+    await render(query, context, _vip_description_text(user_id),
+                 InlineKeyboardMarkup(kb_rows))
+
+
+# ---------------------- Кнопки ----------------------
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -1047,6 +1268,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data
     done: list[dict] = []
+
+    # ================= РЕЙД =================
 
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
@@ -1200,6 +1423,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
 
+    # ================= ДВИЖЕНИЕ / ОТДЫХ / ПАТРУЛЬ =================
+
     if data in ("move_left", "move_right"):
         step = -config.MOVE_STEP if data == "move_left" else config.MOVE_STEP
         raw_new_x = x + step
@@ -1278,11 +1503,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             done += quests.add_progress(user_id, "patrol_start")
             text = ("⚔️ <b>Бой начался!</b>\n\n"
                     + combat.encounter_status_text(encounter) + "\n\n"
-                    + combat.player_status_text(player)
+                    + combat.player_status_text(player, user_id)
                     + _quests_done_text(done))
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
+
+    # ================= БОЙ =================
 
     elif data == "attack" or data == "defend" or data == "flee" or data.startswith("tech:"):
         if data == "attack":
@@ -1315,7 +1542,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             encounter = database.get_encounter(user_id)
             text = ("❌ " + log_text + "\n\n"
                     + combat.encounter_status_text(encounter) + "\n\n"
-                    + combat.player_status_text(database.get_or_create_player(user_id, "")))
+                    + combat.player_status_text(database.get_or_create_player(user_id, ""), user_id))
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             return
@@ -1325,7 +1552,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if encounter and result["status"] == "ongoing":
             text = (combat.encounter_status_text(encounter) + "\n\n" + log_text + "\n\n"
-                    + combat.player_status_text(fresh_player))
+                    + combat.player_status_text(fresh_player, user_id))
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
         elif story.is_in_temp(user_id) and result["status"] == "victory":
@@ -1342,6 +1569,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if result.get("effect"):
             await send_effect_gif(context, query.message.chat_id, result["effect"])
+
+    # ================= ИНВЕНТАРЬ =================
 
     elif data == "inventory":
         items = database.get_inventory(user_id)
@@ -1383,7 +1612,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fresh_player = database.get_or_create_player(user_id, "")
             text = (combat.encounter_status_text(encounter) + "\n\n"
                     + prefix + result["msg"] + "\n\n"
-                    + combat.player_status_text(fresh_player))
+                    + combat.player_status_text(fresh_player, user_id))
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
         else:
@@ -1425,10 +1654,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fresh_player = database.get_or_create_player(user_id, "")
         text = (result["msg"] + "\n\n"
                 + combat.encounter_status_text(encounter) + "\n\n"
-                + combat.player_status_text(fresh_player))
+                + combat.player_status_text(fresh_player, user_id))
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
+
+    # ================= КАРТА / СЮЖЕТ =================
 
     elif data == "map":
         text = "🗺 <b>Карта районов Токио</b>\n\n" + get_world_map_text(x)
@@ -1498,7 +1729,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encounter = database.get_encounter(user_id)
         text = ("⚔️ <b>Бой начался!</b>\n\n"
                 + combat.encounter_status_text(encounter) + "\n\n"
-                + combat.player_status_text(player))
+                + combat.player_status_text(player, user_id))
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
 
@@ -1642,9 +1873,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         encounter = database.get_encounter(user_id)
         text = ("👁 <b>Хранитель пробудился!</b>\n\n"
                 + combat.encounter_status_text(encounter) + "\n\n"
-                + combat.player_status_text(player))
+                + combat.player_status_text(player, user_id))
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
+
+    # ================= ПРОФИЛЬ =================
 
     elif data == "profile_menu":
         await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
@@ -1695,6 +1928,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ])
         await render(query, context, text, keyboard)
 
+    # ================= ЗАДАНИЯ =================
+
     elif data == "quests_menu":
         text = (
             "📋 <b>Задания Годжо</b>\n\n"
@@ -1716,6 +1951,122 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = prefix + res["msg"] + "\n\n" + quests.format_quests_text(user_id, period)
         await render(query, context, text, quests_period_keyboard(period))
 
+    # ================= ГАЧА =================
+
+    elif data == "gacha_hub":
+        await render(query, context,
+                     "🎰 <b>Гача Хакари</b>\n\n"
+                     "Три раздела, три валюты, три шанса изменить свою судьбу.\n"
+                     "Что крутим сегодня?",
+                     gacha_hub_keyboard())
+
+    elif data == "gacha_clan_menu":
+        await render(query, context, gacha_clan_menu_text(user_id),
+                     gacha_clan_menu_keyboard(user_id))
+
+    elif data == "gacha_ce_menu":
+        await render(query, context, gacha_ce_menu_text(user_id),
+                     gacha_ce_menu_keyboard(user_id))
+
+    elif data in ("gacha_clan_roll1", "gacha_clan_roll10"):
+        count = 1 if data == "gacha_clan_roll1" else 10
+        cost = CLAN_GACHA_ROLL_COST if count == 1 else CLAN_GACHA_ROLL_COST_X10
+        player_now = database.get_or_create_player(user_id, "")
+        if player_now["gold"] < cost:
+            await render(query, context,
+                         f"❌ Не хватает очков. Нужно {cost}💠.",
+                         gacha_clan_menu_keyboard(user_id))
+            return
+        database.add_gold(user_id, -cost)
+
+        lines = []
+        for _ in range(count):
+            res = ce_types.roll_clan(user_id)
+            k = res["kind"]
+            if k == "empty":
+                lines.append("💨 Пусто.")
+            elif k == "heavenly":
+                lines.append(f"🌠 <b>{res['emoji']} {res['name']}</b> — новое!\n   <i>{res['desc']}</i>")
+            elif k == "heavenly_duplicate":
+                lines.append(f"🌠 {res['emoji']} {res['name']} (уже было)")
+            elif k == "clan":
+                lines.append(f"🩸 <b>{res['emoji']} {res['name']}</b> — новый клан!\n   <i>{res['desc']}</i>")
+            else:
+                lines.append(f"🩸 {res['emoji']} {res['name']} (уже было)")
+
+        header = f"🩸 <b>Результат {count} круток кланов:</b>" if count > 1 else "🩸 <b>Результат крутки:</b>"
+        text = header + "\n\n" + "\n".join(lines) + "\n\n" + gacha_clan_menu_text(user_id)
+        await render(query, context, text, gacha_clan_menu_keyboard(user_id))
+
+    elif data in ("gacha_ce_roll1", "gacha_ce_roll10"):
+        count = 1 if data == "gacha_ce_roll1" else 10
+        cost = CE_GACHA_ROLL_COST if count == 1 else CE_GACHA_ROLL_COST_X10
+        player_now = database.get_or_create_player(user_id, "")
+        if player_now["gold"] < cost:
+            await render(query, context,
+                         f"❌ Не хватает очков. Нужно {cost}💠.",
+                         gacha_ce_menu_keyboard(user_id))
+            return
+        database.add_gold(user_id, -cost)
+
+        lines = []
+        for _ in range(count):
+            res = ce_types.roll_ce_type(user_id)
+            tag = " — новый!" if res["kind"] == "ce" else " (уже было)"
+            lines.append(f"{res['emoji']} <b>{res['name']}</b> ({res['rarity']}){tag}")
+
+        header = f"⚡ <b>Результат {count} круток ПЭ:</b>" if count > 1 else "⚡ <b>Результат крутки:</b>"
+        text = header + "\n\n" + "\n".join(lines) + "\n\n" + gacha_ce_menu_text(user_id)
+        await render(query, context, text, gacha_ce_menu_keyboard(user_id))
+
+    elif data == "gacha_my_clans":
+        await render(query, context, ce_types.format_clan_list(user_id),
+                     my_clans_keyboard(user_id))
+
+    elif data == "gacha_my_ce":
+        await render(query, context, ce_types.format_ce_list(user_id),
+                     my_ce_keyboard(user_id))
+
+    elif data == "gacha_my_heavenly":
+        await render(query, context, ce_types.format_heavenly_list(user_id),
+                     my_heavenly_keyboard(user_id))
+
+    elif data.startswith("clan_set:"):
+        key = data.split(":", 1)[1]
+        res = ce_types.set_active_clan(user_id, key)
+        text = ("✅ " if res["ok"] else "❌ ") + res["msg"] + "\n\n" + ce_types.format_clan_list(user_id)
+        await render(query, context, text, my_clans_keyboard(user_id))
+
+    elif data == "clan_clear":
+        ce_types.clear_clan(user_id)
+        await render(query, context,
+                     "✅ Активный клан снят.\n\n" + ce_types.format_clan_list(user_id),
+                     my_clans_keyboard(user_id))
+
+    elif data.startswith("ce_set:"):
+        key = data.split(":", 1)[1]
+        res = ce_types.set_active_ce_type(user_id, key)
+        text = ("✅ " if res["ok"] else "❌ ") + res["msg"] + "\n\n" + ce_types.format_ce_list(user_id)
+        await render(query, context, text, my_ce_keyboard(user_id))
+
+    elif data == "ce_clear":
+        ce_types.clear_ce_type(user_id)
+        await render(query, context,
+                     "✅ Активный тип ПЭ снят.\n\n" + ce_types.format_ce_list(user_id),
+                     my_ce_keyboard(user_id))
+
+    elif data.startswith("heavenly_set:"):
+        key = data.split(":", 1)[1]
+        res = ce_types.set_active_heavenly(user_id, key)
+        text = ("✅ " if res["ok"] else "❌ ") + res["msg"] + "\n\n" + ce_types.format_heavenly_list(user_id)
+        await render(query, context, text, my_heavenly_keyboard(user_id))
+
+    elif data == "heavenly_clear":
+        ce_types.clear_heavenly(user_id)
+        await render(query, context,
+                     "✅ Активное Проклятие Небес снято.\n\n" + ce_types.format_heavenly_list(user_id),
+                     my_heavenly_keyboard(user_id))
+
     elif data == "gacha_menu":
         context.user_data["gacha_from"] = "game"
         await render(query, context, gacha_menu_text(user_id), gacha_menu_keyboard())
@@ -1729,12 +2080,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "gacha_back":
         gacha_from = context.user_data.get("gacha_from")
         if gacha_from == "shop":
-            npc_id = "hakari"
-            npc = shop.get_npc(npc_id)
-            text = f"{npc['emoji']} <b>{npc['name']}</b>\n\n<i>{npc['greeting']}</i>"
-            image_path = assets.get_npc_image(npc_id)
-            await render(query, context, text, shop_menu_keyboard(npc_id),
-                         image_path=image_path)
+            await render(query, context,
+                         "🎰 <b>Гача Хакари</b>\n\nЧто крутим сегодня?",
+                         gacha_hub_keyboard())
         elif gacha_from == "profile":
             await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
         else:
@@ -1828,6 +2176,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_rarity_keyboard(user_id, short),
                      image_path=image_path)
+
+    # ================= НПС / МАГАЗИН / ОРУЖИЕ =================
 
     elif data.startswith("npc:"):
         npc_id = data.split(":", 1)[1]
@@ -2033,6 +2383,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = prefix + result["msg"]
         await render(query, context, text, gear_owned_keyboard(user_id))
 
+    # ================= НАЗАД / NOOP =================
+
     elif data == "back_to_game":
         if context.user_data.pop("prev_screen", None) == "profile":
             await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
@@ -2047,7 +2399,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if encounter:
             fresh_player = database.get_or_create_player(user_id, "")
             text = (combat.encounter_status_text(encounter) + "\n\n"
-                    + combat.player_status_text(fresh_player))
+                    + combat.player_status_text(fresh_player, user_id))
             image_path = assets.get_monster_image(encounter["monster_name"])
             await render(query, context, text, kb_for(user_id), image_path=image_path)
         else:
@@ -2058,6 +2410,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "noop":
         return
 
+
+# ---------------------- Планировщик ----------------------
 
 async def delete_message_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data or {}
@@ -2105,6 +2459,8 @@ async def clear_buffs_job(context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Очищено истёкших баффов: {removed}")
 
 
+# ---------------------- Миграции ----------------------
+
 def migrate_curse_seals():
     conn = database.get_conn()
     cur = conn.cursor()
@@ -2119,6 +2475,8 @@ def migrate_curse_seals():
     if total > 0:
         logger.info(f"Миграция печатей: исправлено {total} записей")
 
+
+# ---------------------- Точка входа ----------------------
 
 def main():
     from health import start_health_server

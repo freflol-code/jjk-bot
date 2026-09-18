@@ -146,6 +146,48 @@ def init_db():
         )
     """)
 
+    # --- Типы ПЭ, кланы, Проклятия Небес ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_ce_types (
+            user_id INTEGER NOT NULL,
+            ce_key  TEXT NOT NULL,
+            rarity  TEXT NOT NULL,
+            PRIMARY KEY (user_id, ce_key)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_ce_type (
+            user_id INTEGER PRIMARY KEY,
+            ce_key  TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_clans (
+            user_id  INTEGER NOT NULL,
+            clan_key TEXT NOT NULL,
+            PRIMARY KEY (user_id, clan_key)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_clan (
+            user_id  INTEGER PRIMARY KEY,
+            clan_key TEXT NOT NULL
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_heavenly (
+            user_id      INTEGER NOT NULL,
+            heavenly_key TEXT NOT NULL,
+            PRIMARY KEY (user_id, heavenly_key)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_heavenly (
+            user_id      INTEGER PRIMARY KEY,
+            heavenly_key TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
 
 
@@ -473,7 +515,7 @@ def consume_item(user_id: int, item_name: str, quantity: int):
 
 
 # ============================================================
-#  ОРУЖИЕ (для equipment.py)
+#  ОРУЖИЕ
 # ============================================================
 
 def add_player_weapon(user_id: int, weapon_name: str):
@@ -531,7 +573,7 @@ def get_equipped_weapon_name(user_id: int) -> str | None:
 
 
 # ============================================================
-#  БАФФЫ (реальное время)
+#  БАФФЫ
 # ============================================================
 
 def add_player_buff(user_id: int, stat: str, value: float, duration_seconds: int):
@@ -587,7 +629,7 @@ def clear_expired_buffs() -> int:
 
 
 # ============================================================
-#  PITY-СИСТЕМА ГАЧИ (гарант через N круток)
+#  PITY-СИСТЕМА ГАЧИ
 # ============================================================
 
 def get_pity(user_id: int) -> int:
@@ -623,7 +665,7 @@ def reset_pity(user_id: int):
 
 
 # ============================================================
-#  VIP (подписка за Telegram Stars)
+#  VIP
 # ============================================================
 
 def get_vip_until(user_id: int) -> int:
@@ -658,3 +700,190 @@ def add_vip_days(user_id: int, days: int):
         (user_id, new_expires),
     )
     conn.commit()
+
+
+# ============================================================
+#  ТИПЫ ПЭ
+# ============================================================
+
+def add_ce_type(user_id: int, ce_key: str, rarity: str) -> bool:
+    """True — если новый. False — если уже был."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO player_ce_types (user_id, ce_key, rarity) VALUES (?, ?, ?)",
+            (user_id, ce_key, rarity),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_ce_types(user_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT ce_key, rarity FROM player_ce_types WHERE user_id = ? ORDER BY rarity DESC",
+        (user_id,),
+    )
+    return cur.fetchall()
+
+
+def has_ce_type(user_id: int, ce_key: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM player_ce_types WHERE user_id = ? AND ce_key = ?",
+        (user_id, ce_key),
+    )
+    return cur.fetchone() is not None
+
+
+def set_active_ce_type(user_id: int, ce_key: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO active_ce_type (user_id, ce_key) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET ce_key = excluded.ce_key",
+        (user_id, ce_key),
+    )
+    conn.commit()
+
+
+def clear_active_ce_type(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM active_ce_type WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def get_active_ce_type(user_id: int) -> str | None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT ce_key FROM active_ce_type WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["ce_key"] if row else None
+
+
+# ============================================================
+#  КЛАНЫ
+# ============================================================
+
+def add_clan(user_id: int, clan_key: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO player_clans (user_id, clan_key) VALUES (?, ?)",
+            (user_id, clan_key),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_clans(user_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT clan_key FROM player_clans WHERE user_id = ? ORDER BY clan_key",
+        (user_id,),
+    )
+    return cur.fetchall()
+
+
+def has_clan(user_id: int, clan_key: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM player_clans WHERE user_id = ? AND clan_key = ?",
+        (user_id, clan_key),
+    )
+    return cur.fetchone() is not None
+
+
+def set_active_clan(user_id: int, clan_key: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO active_clan (user_id, clan_key) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET clan_key = excluded.clan_key",
+        (user_id, clan_key),
+    )
+    conn.commit()
+
+
+def clear_active_clan(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM active_clan WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def get_active_clan(user_id: int) -> str | None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT clan_key FROM active_clan WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["clan_key"] if row else None
+
+
+# ============================================================
+#  ПРОКЛЯТИЯ НЕБЕС
+# ============================================================
+
+def add_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO player_heavenly (user_id, heavenly_key) VALUES (?, ?)",
+            (user_id, heavenly_key),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def get_heavenly_restrictions(user_id: int):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT heavenly_key FROM player_heavenly WHERE user_id = ? ORDER BY heavenly_key",
+        (user_id,),
+    )
+    return cur.fetchall()
+
+
+def has_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM player_heavenly WHERE user_id = ? AND heavenly_key = ?",
+        (user_id, heavenly_key),
+    )
+    return cur.fetchone() is not None
+
+
+def set_active_heavenly(user_id: int, heavenly_key: str):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO active_heavenly (user_id, heavenly_key) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET heavenly_key = excluded.heavenly_key",
+        (user_id, heavenly_key),
+    )
+    conn.commit()
+
+
+def clear_active_heavenly(user_id: int):
+    conn = get_conn()
+    conn.execute("DELETE FROM active_heavenly WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def get_active_heavenly(user_id: int) -> str | None:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT heavenly_key FROM active_heavenly WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["heavenly_key"] if row else None

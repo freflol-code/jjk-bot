@@ -5,7 +5,7 @@ import logging
 import time
 
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice,
 )
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -13,6 +13,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    PreCheckoutQueryHandler,
     filters,
     ContextTypes,
 )
@@ -32,6 +33,7 @@ import equipment
 import leaderboard
 import story
 import raid
+from config import VIP_PRICE_STARS, VIP_DURATION_DAYS, VIP_PAYLOAD
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -96,7 +98,6 @@ def _get_current_step_info(user_id: int):
 
 
 def _get_symbols(puzzle: dict) -> list:
-    """Символы для sequence-головоломки в фиксированном порядке."""
     return puzzle.get("symbols") or list(dict.fromkeys(puzzle["sequence"]))
 
 
@@ -288,8 +289,6 @@ def gacha_rarity_keyboard(user_id: int, short: str) -> InlineKeyboardMarkup:
 
 
 def inventory_keyboard(user_id: int):
-    """Callback_data — индекс элемента в inventory (только число), не имя.
-    Имя содержит кириллицу и эмодзи, что Telegram в callback_data не принимает."""
     items = database.get_inventory(user_id)
     rows = []
     for i, item in enumerate(items):
@@ -454,14 +453,27 @@ def story_temp_keyboard(user_id: int) -> InlineKeyboardMarkup:
 
 
 def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+    rows = [
         [
             InlineKeyboardButton("🎒 Инвентарь", callback_data="profile_inventory"),
             InlineKeyboardButton("🌀 Техники", callback_data="profile_techniques"),
         ],
         [InlineKeyboardButton("🏆 Таблица лидеров", callback_data="profile_leaderboard")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")],
-    ])
+    ]
+    if database.has_vip(user_id):
+        until = database.get_vip_until(user_id)
+        days_left = (until - int(time.time())) // 86400
+        rows.append([InlineKeyboardButton(
+            f"💎 VIP активен ({days_left} дн.)",
+            callback_data="vip_info",
+        )])
+    else:
+        rows.append([InlineKeyboardButton(
+            f"💎 Купить VIP ({VIP_PRICE_STARS}⭐ / {VIP_DURATION_DAYS} дн.)",
+            callback_data="vip_buy",
+        )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
+    return InlineKeyboardMarkup(rows)
 
 
 def raid_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
@@ -670,6 +682,9 @@ def gacha_menu_text(user_id: int) -> str:
     player = database.get_or_create_player(user_id, "")
     equipped = gacha.get_equipped(user_id)
     learned = database.get_player_techniques(user_id)
+    pity = database.get_pity(user_id)
+    pity_left = max(0, config.GACHA_PITY_LIMIT - pity)
+
     eq_lines = []
     for name in equipped:
         t = gacha.get_technique(name)
@@ -687,6 +702,7 @@ def gacha_menu_text(user_id: int) -> str:
         f"📖 Изучено техник: {len(learned)}\n\n"
         f"<b>Боевой набор ({len(equipped)}/{config.MAX_EQUIPPED_TECHNIQUES}):</b>\n{eq_text}\n\n"
         f"<b>Шансы выпадения:</b>\n{rates}\n\n"
+        f"🎯 <b>Гарант через:</b> {pity_left} круток\n\n"
         "<i>Хакари: «Ставки честные. Ну, почти.»</i>"
     )
 
@@ -731,7 +747,16 @@ def profile_text(user_id: int) -> str:
         f"{rank_line}"
         f"{buffs_line}"
         f"{cap_line}"
+        + _vip_line(user_id)
     )
+
+
+def _vip_line(user_id: int) -> str:
+    until = database.get_vip_until(user_id)
+    if until:
+        days_left = (until - int(time.time())) // 86400
+        return f"\n\n💎 <b>VIP активен</b> — осталось {days_left} дн. (награды ×2)"
+    return ""
 
 
 def _quests_done_text(done: list[dict]) -> str:
@@ -924,6 +949,71 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await update.message.reply_html(body, reply_markup=puzzle_keyboard(pid))
         else:
             await update.message.reply_html(body, reply_markup=kb_for(user.id))
+
+
+async def vip_buy_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+    try:
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title=f"VIP на {VIP_DURATION_DAYS} дней",
+            description="×2 к золоту и опыту с боёв",
+            payload=VIP_PAYLOAD,
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(f"VIP {VIP_DURATION_DAYS} дней", VIP_PRICE_STARS)],
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось отправить инвойс: {e}")
+        await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
+
+
+async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if query.invoice_payload == VIP_PAYLOAD:
+        await query.answer(ok=True)
+    else:
+        await query.answer(ok=False, error_message="Неизвестный платёж")
+
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    if not msg or not msg.successful_payment:
+        return
+    payment = msg.successful_payment
+    if payment.invoice_payload != VIP_PAYLOAD:
+        return
+    user_id = msg.from_user.id
+    database.add_vip_days(user_id, VIP_DURATION_DAYS)
+    until = database.get_vip_until(user_id)
+    days_left = (until - int(time.time())) // 86400
+    await msg.reply_html(
+        f"💎 <b>VIP активирован!</b>\n\n"
+        f"Срок: {VIP_DURATION_DAYS} дней (осталось {days_left}).\n"
+        f"Награды с боёв теперь ×2.\n\n"
+        f"<i>Спасибо за поддержку!</i>",
+        reply_markup=kb_for(user_id),
+    )
+
+
+async def vip_info_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    await query.answer()
+    until = database.get_vip_until(user_id)
+    if not until:
+        await render(query, context,
+                     "💎 VIP не активен. Купи в меню профиля.",
+                     kb_for(user_id))
+        return
+    days_left = (until - int(time.time())) // 86400
+    await render(query, context,
+                 f"💎 <b>VIP активен</b>\n\n"
+                 f"Осталось дней: <b>{days_left}</b>\n"
+                 f"Награды: ×2 к золоту и опыту.",
+                 profile_menu_keyboard(user_id))
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1202,7 +1292,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "flee":
             result = combat.flee(user_id)
         else:
-            # tech:<slot> — номер техники в боевом наборе
             try:
                 slot = int(data.split(":", 1)[1])
             except ValueError:
@@ -1472,7 +1561,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "tap":
             if len(parts) < 4:
                 return
-            # parts[3] — номер символа (ASCII), не эмодзи
             try:
                 sym_idx = int(parts[3])
             except ValueError:
@@ -1560,6 +1648,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "profile_menu":
         await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
+
+    elif data == "vip_buy":
+        await vip_buy_handler(update, context)
+        return
+
+    elif data == "vip_info":
+        await vip_info_handler(update, context)
+        return
 
     elif data == "profile_inventory":
         context.user_data["prev_screen"] = "profile"
@@ -1679,6 +1775,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Уже изучена — Хакари вернул {result['refund']}💠 в качестве компенсации.")
             else:
                 text = f"🎉 Новая техника: {result['emoji']} <b>{result['name']}</b> {emoji}({result['rarity']})!"
+            if result["rarity"] in ("Легендарная (Особый класс)", "Мифическая"):
+                text += "\n\n✨ <b>Счётчик гаранта сброшен!</b>"
             text += "\n\n" + gacha_menu_text(user_id)
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_menu_keyboard(), image_path=image_path)
@@ -1691,7 +1789,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             lines = ["🎰 <b>Результаты 10 круток:</b>"]
             for r in result["results"]:
                 emoji = config.GACHA_RARITY_EMOJI.get(r["rarity"], "")
-                tag = " (дубликат, компенсация)" if r["duplicate"] else " ✨НОВОЕ✨"
+                tag = " (дубликат)" if r["duplicate"] else " ✨НОВОЕ✨"
                 lines.append(f"{r['emoji']} {r['name']} {emoji}({r['rarity']}){tag}")
             text = "\n".join(lines) + "\n\n" + gacha_menu_text(user_id)
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
@@ -2045,6 +2143,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("inventory", inventory_command))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 

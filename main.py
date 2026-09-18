@@ -142,14 +142,16 @@ def main_keyboard(user_id: int):
 
     if in_combat:
         rows = [[InlineKeyboardButton("⚔️ Обычная атака", callback_data="attack")]]
-        equipped = gacha.get_equipped(user_id)
-        for i, name in enumerate(equipped):
-            t = gacha.get_technique(name)
-            if t:
-                rows.append([InlineKeyboardButton(
-                    f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
-                    callback_data=f"tech:{i}",
-                )])
+        eff = ce_types.get_effective_stats(user_id)
+        if eff["max_ce"] > 0:
+            equipped = gacha.get_equipped(user_id)
+            for i, name in enumerate(equipped):
+                t = gacha.get_technique(name)
+                if t:
+                    rows.append([InlineKeyboardButton(
+                        f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
+                        callback_data=f"tech:{i}",
+                    )])
         rows.append([
             InlineKeyboardButton("🛡 Защита", callback_data="defend"),
             InlineKeyboardButton("🏃 Сбежать", callback_data="flee"),
@@ -630,14 +632,16 @@ def raid_battle_keyboard(raid_id: int, user_id: int) -> InlineKeyboardMarkup:
             "⚔️ Обычная атака",
             callback_data=f"raid_attack:{raid_id}",
         )])
-        equipped = gacha.get_equipped(user_id)
-        for i, name in enumerate(equipped):
-            t = gacha.get_technique(name)
-            if t:
-                rows.append([InlineKeyboardButton(
-                    f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
-                    callback_data=f"raid_attack:{raid_id}:t:{i}",
-                )])
+        eff = ce_types.get_effective_stats(user_id)
+        if eff["max_ce"] > 0:
+            equipped = gacha.get_equipped(user_id)
+            for i, name in enumerate(equipped):
+                t = gacha.get_technique(name)
+                if t:
+                    rows.append([InlineKeyboardButton(
+                        f"{t['emoji']} {name} ({t['ce_cost']}🔵)",
+                        callback_data=f"raid_attack:{raid_id}:t:{i}",
+                    )])
     rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
     return InlineKeyboardMarkup(rows)
 

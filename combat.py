@@ -19,6 +19,7 @@ from config import (
     MONSTER_MISS_CHANCE, FLEE_CHANCE,
     GOLD_PER_HP, EXP_PER_HP, DROP_CHANCE, DEATH_GOLD_LOSS,
     RARITY_EMOJI, EXP_BASE, CLASS_EMOJI,
+    DOMAIN_UNLOCK_USES,
 )
 from loot import roll_quantity
 from bosses import BOSSES, is_boss, SUMMON_RECIPES
@@ -145,14 +146,30 @@ def _find_domain_by_technique(technique_name: str) -> str | None:
 
 def _activate_domain(user_id: int, technique_name: str, log: list):
     """Пытается активировать домен при использовании мастер-техники.
+    Домен откроется только после DOMAIN_UNLOCK_USES использований.
     Если домен уже активен — не перезаписывает."""
     technique = gacha.get_technique(technique_name)
     if not technique or not technique.get("has_domain"):
         return
 
+    # Инкремент счётчика использований
+    uses = database.inc_technique_uses(user_id, technique_name)
+
+    if uses < DOMAIN_UNLOCK_USES:
+        log.append(f"🌀 Расширение Территории: {uses}/{DOMAIN_UNLOCK_USES}")
+        return
+
     domain_key = _find_domain_by_technique(technique_name)
     if not domain_key:
         return
+
+    # Первое использование после разблокировки — особое сообщение
+    if uses == DOMAIN_UNLOCK_USES:
+        domain_data = DOMAINS.get(domain_key, {})
+        log.append(
+            f"🎉 <b>Расширение Территории разблокировано!</b> "
+            f"{domain_data.get('emoji', '')} {domain_data.get('name', '')}"
+        )
 
     cur_key, cur_turns = database.get_domain(user_id)
     if cur_key:

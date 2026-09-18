@@ -5,8 +5,10 @@
 
 Расширения Территории активируются ВРУЧНУЮ кнопкой «🌌 Использовать домен».
 Мастер-техника копит счётчик использований (для разблокировки домена).
-Плюс в каждом бою отдельно копятся заряды под условие активации домена
-(deal_damage_N / take_damage_N / use_tech_N / use_black_flash_N).
+Плюс в каждом бою отдельно копятся заряды под условие активации домена.
+
+Многократная активация в одном бою: 1-я — бесплатно, 2-я — −20% HP,
+3-я — −50% HP, 4-я и далее — −70% HP (не ниже 1 HP).
 """
 import random
 
@@ -40,6 +42,12 @@ CLASS_REWARD_MULT = {
 
 DEFEND_DAMAGE_MULT = 0.5
 DEFEND_CE_REGEN_MULT = 2.0
+
+
+# Штрафы за повторную активацию домена в одном бою (от текущего HP).
+# 1-е использование — бесплатно (индекс 0 = 0.0).
+# Дальше — проценты по порядковому номеру использования в бою.
+DOMAIN_REACTIVATION_PENALTY = [0.0, 0.20, 0.50, 0.70]
 
 
 # ============================================================
@@ -131,6 +139,22 @@ def _find_domain_by_technique(technique_name: str) -> str | None:
     return None
 
 
+def _get_reactivation_penalty(uses_before: int) -> float:
+    """Штраф HP за активацию домена, где uses_before — сколько раз уже
+    активировали в этом бою ДО текущей.
+    0 → 0.0 (первое), 1 → 0.20, 2 → 0.50, 3+ → 0.70."""
+    if uses_before < len(DOMAIN_REACTIVATION_PENALTY):
+        return DOMAIN_REACTIVATION_PENALTY[uses_before]
+    return DOMAIN_REACTIVATION_PENALTY[-1]
+
+
+def _penalty_preview(user_id: int) -> tuple[int, float]:
+    """Возвращает (следующее_использование_№, штраф_доля) для предпросмотра
+    в UI кнопки. Например, если уже 1 использование в бою — вернёт (2, 0.20)."""
+    used = database.get_domain_uses_in_battle(user_id)
+    return (used + 1, _get_reactivation_penalty(used))
+
+
 # ============================================================
 #  СЧЁТЧИК ИСПОЛЬЗОВАНИЙ (для разблокировки домена)
 # ============================================================
@@ -213,8 +237,7 @@ def _parse_activation(activation: str) -> tuple[str, int] | None:
 
 def check_activation_condition(user_id: int) -> dict:
     """Проверяет условие активации домена в текущем бою.
-    Возвращает {ok, text, current, goal, domain_name, domain_emoji}.
-    Если у игрока нет разблокированного домена — ok=False, text='нет домена'."""
+    Возвращает {ok, text, current, goal, domain_name, domain_emoji}."""
     technique_name = get_unlocked_domain_technique(user_id)
     if not technique_name:
         return {"ok": False, "text": "нет разблокированного домена",
@@ -268,10 +291,12 @@ def check_activation_condition(user_id: int) -> dict:
 
 
 def activate_domain_manual(user_id: int) -> dict:
-    """Ручная активация домена кнопкой. Проверяет оба условия:
+    """Ручная активация домена кнопкой. Проверяет все условия:
     - домен разблокирован (20+ использований техники);
-    - условие activation выполнено в текущем бою.
-    При успехе обнуляет заряды."""
+    - условие activation выполнено в текущем бою;
+    - нет активного домена.
+    При успехе обнуляет заряды и списывает HP по таблице штрафов
+    за повторные активации в одном бою."""
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"ok": False, "msg": "Перед тобой никого нет."}
@@ -305,6 +330,22 @@ def activate_domain_manual(user_id: int) -> dict:
     effect = DOMAIN_EFFECTS.get(domain_key, {})
     log = []
 
+    # --- Штраф HP за повторную активацию в этом бою ---
+    uses_before = database.get_domain_uses_in_battle(user_id)
+    penalty = _get_reactivation_penalty(uses_before)
+
+    if penalty > 0:
+        player = database.get_or_create_player(user_id, "")
+        current_hp = player["hp"]
+        loss = int(current_hp * penalty)
+        new_hp = max(1, current_hp - loss)  # не умираешь от своего же домена
+        database.update_player_hp(user_id, new_hp)
+        log.append(
+            f"💔 <b>Повторное расширение отняло {loss} HP</b> "
+            f"({int(penalty * 100)}% от текущего). HP: {new_hp}/{current_hp}."
+        )
+
+    # --- Активация ---
     if effect.get("gamble"):
         if random.random() < 0.5:
             database.set_domain(user_id, domain_key, 3)
@@ -318,21 +359,29 @@ def activate_domain_manual(user_id: int) -> dict:
                 f"💀 <b>ПРОИГРЫШ!</b> {domain_data['emoji']} "
                 f"<b>{domain_data['name']}</b> обнулил твою ПЭ!"
             )
-        database.reset_charges(user_id)
-        return {"ok": True, "log": log, "effect": "domain_activate"}
+    else:
+        database.set_domain(user_id, domain_key, 3)
+        log.append(
+            f"{domain_data['emoji']} <b>Расширение Территории:</b> "
+            f"<b>{domain_data['name']}</b> активировано на 3 хода!"
+        )
+        log.append(f"<i>{domain_data['effect']}</i>")
 
-    database.set_domain(user_id, domain_key, 3)
-    log.append(
-        f"{domain_data['emoji']} <b>Расширение Территории:</b> "
-        f"<b>{domain_data['name']}</b> активировано на 3 хода!"
-    )
-    log.append(f"<i>{domain_data['effect']}</i>")
+        if effect.get("first_turn_stun"):
+            database.set_encounter_status(user_id, stun_turns=effect["first_turn_stun"])
+            log.append(f"😵 Проклятие оглушено на {effect['first_turn_stun']} х.!")
 
-    if effect.get("first_turn_stun"):
-        database.set_encounter_status(user_id, stun_turns=effect["first_turn_stun"])
-        log.append(f"😵 Проклятие оглушено на {effect['first_turn_stun']} х.!")
-
+    database.inc_domain_uses_in_battle(user_id)
     database.reset_charges(user_id)
+
+    # Подсказка про следующий штраф
+    next_num, next_penalty = _penalty_preview(user_id)
+    if next_penalty > 0:
+        log.append(
+            f"<i>Следующее расширение в этом бою отнимет "
+            f"{int(next_penalty * 100)}% HP.</i>"
+        )
+
     return {"ok": True, "log": log, "effect": "domain_activate"}
 
 
@@ -768,7 +817,6 @@ def _curse_turn(user_id: int, player, encounter, log: list,
             return _death(user_id, player, log)
         database.update_player_hp(user_id, new_hp)
 
-        # Счётчик полученного урона (для условия activation)
         database.add_charge(user_id, "dmg_taken", mdmg)
 
         note = f"(защита -{int(reduction*100)}%"
@@ -838,7 +886,6 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
             if technique:
                 effect_key = f"technique:{technique_name}"
 
-        # Заряды для условия активации домена
         if dmg > 0:
             database.add_charge(user_id, "dmg_dealt", dmg)
         if black_flash:

@@ -2,6 +2,11 @@
 Пошаговая боевая система «Магическая Битва: Токио».
 Учитывает эффекты типа ПЭ, клана, Проклятия Небес, Расширений Территории
 и VIP-множителя наград.
+
+Расширения Территории активируются ВРУЧНУЮ кнопкой «🌌 Использовать домен».
+Мастер-техника копит счётчик использований (для разблокировки домена).
+Плюс в каждом бою отдельно копятся заряды под условие активации домена
+(deal_damage_N / take_damage_N / use_tech_N / use_black_flash_N).
 """
 import random
 
@@ -40,24 +45,6 @@ DEFEND_CE_REGEN_MULT = 2.0
 # ============================================================
 #  ЭФФЕКТЫ РАСШИРЕНИЙ ТЕРРИТОРИИ (домены)
 # ============================================================
-# Ключ = domain_key из DOMAINS.
-# Поля:
-#   dmg_mult              — множитель урона игрока, пока домен активен
-#   defense_mult          — множитель входящего урона (0.75 = −25%)
-#   dot_dmg               — урон монстру каждый ход домена
-#   dot_growth            — прирост dot_dmg каждый следующий ход
-#   dot_name              — подпись в логе для DoT
-#   heal_per_turn         — сколько HP восстанавливает игроку каждый ход
-#   stun_per_turn_chance  — шанс стана монстра каждый ход
-#   first_turn_stun       — стан монстра при активации домена
-#   enemy_miss_bonus      — доп. шанс промаха монстра
-#   enemy_dmg_mult        — множитель урона монстра (<1 = слабее)
-#   dodge_bonus           — доп. уклонение игрока
-#   summon_rika           — флаг: Рика бьёт каждый ход
-#   rika_dmg              — урон Рики
-#   gamble                — особый: ролл 50/50 при активации
-# ============================================================
-
 DOMAIN_EFFECTS = {
     "unlimited_void": {
         "dmg_mult": 1.30, "defense_mult": 0.75,
@@ -144,44 +131,180 @@ def _find_domain_by_technique(technique_name: str) -> str | None:
     return None
 
 
-def _activate_domain(user_id: int, technique_name: str, log: list):
-    """Пытается активировать домен при использовании мастер-техники.
-    Домен откроется только после DOMAIN_UNLOCK_USES использований.
-    Если домен уже активен — не перезаписывает."""
+# ============================================================
+#  СЧЁТЧИК ИСПОЛЬЗОВАНИЙ (для разблокировки домена)
+# ============================================================
+
+def _register_domain_use(user_id: int, technique_name: str, log: list):
+    """Считает использование мастер-техники. При достижении порога
+    уведомляет о разблокировке. Сама активация — ручная, через
+    функцию activate_domain_manual()."""
     technique = gacha.get_technique(technique_name)
     if not technique or not technique.get("has_domain"):
         return
 
-    # Инкремент счётчика использований
     uses = database.inc_technique_uses(user_id, technique_name)
 
     if uses < DOMAIN_UNLOCK_USES:
         log.append(f"🌀 Расширение Территории: {uses}/{DOMAIN_UNLOCK_USES}")
         return
 
-    domain_key = _find_domain_by_technique(technique_name)
-    if not domain_key:
-        return
-
-    # Первое использование после разблокировки — особое сообщение
     if uses == DOMAIN_UNLOCK_USES:
-        domain_data = DOMAINS.get(domain_key, {})
+        domain_key = _find_domain_by_technique(technique_name)
+        domain_data = DOMAINS.get(domain_key, {}) if domain_key else {}
         log.append(
             f"🎉 <b>Расширение Территории разблокировано!</b> "
             f"{domain_data.get('emoji', '')} {domain_data.get('name', '')}"
         )
+        log.append("🌌 В бою доступна кнопка «Использовать домен».")
+
+
+def player_has_unlocked_domain(user_id: int) -> bool:
+    """True, если у игрока есть экипированная мастер-техника с 20+ использованиями."""
+    equipped = gacha.get_equipped(user_id)
+    for name in equipped:
+        t = gacha.get_technique(name)
+        if not t or not t.get("has_domain"):
+            continue
+        uses = database.get_technique_uses(user_id, name)
+        if uses >= DOMAIN_UNLOCK_USES:
+            return True
+    return False
+
+
+def get_unlocked_domain_technique(user_id: int) -> str | None:
+    """Имя первой экипированной мастер-техники с разблокированным доменом."""
+    equipped = gacha.get_equipped(user_id)
+    for name in equipped:
+        t = gacha.get_technique(name)
+        if not t or not t.get("has_domain"):
+            continue
+        uses = database.get_technique_uses(user_id, name)
+        if uses >= DOMAIN_UNLOCK_USES:
+            return name
+    return None
+
+
+def has_active_domain(user_id: int) -> bool:
+    """True, если прямо сейчас активен какой-либо домен."""
+    key, turns = database.get_domain(user_id)
+    return bool(key and turns > 0)
+
+
+# ============================================================
+#  ПРОВЕРКА УСЛОВИЯ АКТИВАЦИИ ИЗ DOMAINS
+# ============================================================
+
+def _parse_activation(activation: str) -> tuple[str, int] | None:
+    """Разбирает строку 'use_tech_3' → ('use_tech', 3).
+    'always' → None. Некорректный формат → None."""
+    if not activation or activation == "always":
+        return None
+    parts = activation.rsplit("_", 1)
+    if len(parts) != 2:
+        return None
+    atype, n_str = parts
+    try:
+        n = int(n_str)
+    except ValueError:
+        return None
+    return (atype, n)
+
+
+def check_activation_condition(user_id: int) -> dict:
+    """Проверяет условие активации домена в текущем бою.
+    Возвращает {ok, text, current, goal, domain_name, domain_emoji}.
+    Если у игрока нет разблокированного домена — ok=False, text='нет домена'."""
+    technique_name = get_unlocked_domain_technique(user_id)
+    if not technique_name:
+        return {"ok": False, "text": "нет разблокированного домена",
+                "current": 0, "goal": 0, "domain_name": "", "domain_emoji": "🌌"}
+
+    domain_key = _find_domain_by_technique(technique_name)
+    if not domain_key:
+        return {"ok": False, "text": "домен не найден",
+                "current": 0, "goal": 0, "domain_name": "", "domain_emoji": "🌌"}
+
+    domain_data = DOMAINS.get(domain_key, {})
+    domain_name = domain_data.get("name", domain_key)
+    domain_emoji = domain_data.get("emoji", "🌌")
+
+    activation = domain_data.get("activation", "always")
+    parsed = _parse_activation(activation)
+
+    if parsed is None:
+        return {"ok": True, "text": "готово",
+                "current": 0, "goal": 0,
+                "domain_name": domain_name, "domain_emoji": domain_emoji}
+
+    atype, goal = parsed
+    charges = database.get_charges(user_id)
+
+    if atype == "use_tech":
+        cur = charges["tech_uses"]
+        label = "техник"
+    elif atype == "deal_damage":
+        cur = charges["dmg_dealt"]
+        label = "урона"
+    elif atype == "take_damage":
+        cur = charges["dmg_taken"]
+        label = "получено"
+    elif atype == "use_black_flash":
+        cur = charges["black_flash"]
+        label = "критов"
+    else:
+        return {"ok": True, "text": "готово",
+                "current": 0, "goal": 0,
+                "domain_name": domain_name, "domain_emoji": domain_emoji}
+
+    return {
+        "ok": cur >= goal,
+        "text": f"{cur}/{goal} {label}",
+        "current": cur,
+        "goal": goal,
+        "domain_name": domain_name,
+        "domain_emoji": domain_emoji,
+    }
+
+
+def activate_domain_manual(user_id: int) -> dict:
+    """Ручная активация домена кнопкой. Проверяет оба условия:
+    - домен разблокирован (20+ использований техники);
+    - условие activation выполнено в текущем бою.
+    При успехе обнуляет заряды."""
+    encounter = database.get_encounter(user_id)
+    if not encounter:
+        return {"ok": False, "msg": "Перед тобой никого нет."}
 
     cur_key, cur_turns = database.get_domain(user_id)
-    if cur_key:
+    if cur_key and cur_turns > 0:
         cur_data = DOMAINS.get(cur_key)
         cur_name = cur_data["name"] if cur_data else cur_key
-        log.append(f"⚠️ Домен уже активен: <b>{cur_name}</b> ({cur_turns} х.)")
-        return
+        return {"ok": False, "msg": f"Домен уже активен: <b>{cur_name}</b> ({cur_turns} х.)"}
+
+    technique_name = get_unlocked_domain_technique(user_id)
+    if not technique_name:
+        return {"ok": False, "msg": "У тебя нет разблокированного домена."}
+
+    condition = check_activation_condition(user_id)
+    if not condition["ok"]:
+        return {
+            "ok": False,
+            "msg": (
+                f"❌ Условие не выполнено: <b>{condition['text']}</b>.\n"
+                f"Домен <b>{condition['domain_emoji']} {condition['domain_name']}</b> "
+                f"пока не готов."
+            ),
+        }
+
+    domain_key = _find_domain_by_technique(technique_name)
+    if not domain_key:
+        return {"ok": False, "msg": "Домен для этой техники не найден."}
 
     domain_data = DOMAINS[domain_key]
     effect = DOMAIN_EFFECTS.get(domain_key, {})
+    log = []
 
-    # Особый случай: Игра в Смерть на Досуге — 50/50
     if effect.get("gamble"):
         if random.random() < 0.5:
             database.set_domain(user_id, domain_key, 3)
@@ -195,9 +318,9 @@ def _activate_domain(user_id: int, technique_name: str, log: list):
                 f"💀 <b>ПРОИГРЫШ!</b> {domain_data['emoji']} "
                 f"<b>{domain_data['name']}</b> обнулил твою ПЭ!"
             )
-        return
+        database.reset_charges(user_id)
+        return {"ok": True, "log": log, "effect": "domain_activate"}
 
-    # Обычная активация
     database.set_domain(user_id, domain_key, 3)
     log.append(
         f"{domain_data['emoji']} <b>Расширение Территории:</b> "
@@ -205,10 +328,12 @@ def _activate_domain(user_id: int, technique_name: str, log: list):
     )
     log.append(f"<i>{domain_data['effect']}</i>")
 
-    # Мгновенный стан при активации
     if effect.get("first_turn_stun"):
         database.set_encounter_status(user_id, stun_turns=effect["first_turn_stun"])
         log.append(f"😵 Проклятие оглушено на {effect['first_turn_stun']} х.!")
+
+    database.reset_charges(user_id)
+    return {"ok": True, "log": log, "effect": "domain_activate"}
 
 
 def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
@@ -222,7 +347,6 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
     domain_data = DOMAINS.get(domain_key, {})
     domain_name = domain_data.get("name", domain_key)
 
-    # 1. Рика бьёт (Юта)
     if effect.get("summon_rika"):
         rika_dmg = effect.get("rika_dmg", 50)
         encounter = database.get_encounter(user_id)
@@ -233,11 +357,9 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
             if new_hp <= 0:
                 return True
 
-    # 2. DoT от домена
     if effect.get("dot_dmg"):
         base_dot = effect["dot_dmg"]
         growth = effect.get("dot_growth", 0)
-        # Например, домен на 3 хода — 1-й ход базовый, 2-й + growth, 3-й + 2*growth
         turns_elapsed = 3 - turns
         dot = base_dot + growth * turns_elapsed
 
@@ -250,7 +372,6 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
             if new_hp <= 0:
                 return True
 
-    # 3. Лечение игрока
     if effect.get("heal_per_turn"):
         heal = effect["heal_per_turn"]
         eff = ce_types.get_effective_stats(user_id, player)
@@ -259,13 +380,11 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
             database.update_player_hp(user_id, new_hp)
             log.append(f"💚 Домен исцеляет: +{new_hp - player['hp']} HP.")
 
-    # 4. Стан каждый ход
     if effect.get("stun_per_turn_chance"):
         if random.random() < effect["stun_per_turn_chance"]:
             database.set_encounter_status(user_id, stun_turns=1)
             log.append("❄️ Проклятие сковано льдом домена!")
 
-    # 5. Уменьшаем счётчик ходов
     new_key, new_turns = database.decrement_domain(user_id)
     if new_key is None:
         log.append(f"🌫️ <b>{domain_name}</b> рассеялось.")
@@ -310,7 +429,6 @@ def _physical_damage(user_id: int, player) -> int:
     if div > 1.0:
         dmg = max(1, int(dmg / div))
 
-    # Домен усиливает урон
     domain_key, domain_turns = database.get_domain(user_id)
     if domain_key and domain_turns > 0:
         domain_eff = DOMAIN_EFFECTS.get(domain_key, {})
@@ -332,7 +450,6 @@ def _technique_damage(user_id: int, player, technique: dict) -> int:
     effects = ce_types.get_active_effects(user_id)
     dmg = int(dmg * effects.get("tech_dmg_mult", 1.0))
 
-    # Домен усиливает урон
     domain_key, domain_turns = database.get_domain(user_id)
     if domain_key and domain_turns > 0:
         domain_eff = DOMAIN_EFFECTS.get(domain_key, {})
@@ -468,8 +585,6 @@ def _story_tracking(user_id: int, encounter, log: list):
             drop = boss.get("drop_item")
             if drop:
                 dn, dr, dq = drop
-                # VIP ×2 к сюжетному трофею. НО: Палец Сукуны — сюжетный
-                # предмет, его всегда ровно 1, VIP не влияет.
                 if dn != "Палец Сукуны" and database.vip_mult(user_id) > 1.0:
                     dq *= 2
                 database.add_item(user_id, dn, dr, dq)
@@ -622,7 +737,6 @@ def _curse_turn(user_id: int, player, encounter, log: list,
     effects = ce_types.get_active_effects(user_id)
     dodge_bonus = effects.get("dodge_chance", 0.0)
 
-    # Бонусы от домена
     domain_key, domain_turns = database.get_domain(user_id)
     domain_eff = DOMAIN_EFFECTS.get(domain_key, {}) if domain_key and domain_turns > 0 else {}
     dodge_bonus += domain_eff.get("dodge_bonus", 0.0)
@@ -642,7 +756,6 @@ def _curse_turn(user_id: int, player, encounter, log: list,
 
         defense_mult = effects.get("defense_mult", 1.0)
 
-        # Множители домена
         domain_def_mult = domain_eff.get("defense_mult", 1.0)
         enemy_dmg_mult = domain_eff.get("enemy_dmg_mult", 1.0)
 
@@ -654,6 +767,9 @@ def _curse_turn(user_id: int, player, encounter, log: list,
         if new_hp <= 0:
             return _death(user_id, player, log)
         database.update_player_hp(user_id, new_hp)
+
+        # Счётчик полученного урона (для условия activation)
+        database.add_charge(user_id, "dmg_taken", mdmg)
 
         note = f"(защита -{int(reduction*100)}%"
         if damage_mult < 1.0:
@@ -695,9 +811,9 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
 
     effect_key = None
     black_flash = False
+    dmg = 0
     if random.random() < PLAYER_MISS_CHANCE:
         log.append("💨 Ты промахнулся!")
-        dmg = 0
     else:
         if technique:
             dmg = _technique_damage(user_id, player, technique)
@@ -722,11 +838,17 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
             if technique:
                 effect_key = f"technique:{technique_name}"
 
+        # Заряды для условия активации домена
+        if dmg > 0:
+            database.add_charge(user_id, "dmg_dealt", dmg)
+        if black_flash:
+            database.add_charge(user_id, "black_flash", 1)
+
     if technique:
         database.update_player_ce(user_id, player["ce"] - technique["ce_cost"])
         quests.add_progress(user_id, "tech_use")
-        # Пытаемся активировать домен
-        _activate_domain(user_id, technique_name, log)
+        database.add_charge(user_id, "tech_uses", 1)
+        _register_domain_use(user_id, technique_name, log)
 
     if black_flash:
         if random.random() < BLACK_FLASH_STUN_CHANCE:
@@ -771,13 +893,11 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     database.update_encounter_hp(user_id, monster_hp)
     encounter = database.get_encounter(user_id)
 
-    # Эффекты домена в конце хода игрока
     domain_killed = _process_domain_turn(user_id, player, encounter, log)
     if domain_killed:
         encounter = database.get_encounter(user_id)
         return _victory(user_id, encounter, log)
 
-    # Перечитываем encounter — DoT мог его изменить
     encounter = database.get_encounter(user_id)
     if encounter and encounter["hp"] <= 0:
         return _victory(user_id, encounter, log)
@@ -824,7 +944,6 @@ def defend(user_id: int) -> dict:
     if encounter and encounter["hp"] <= 0:
         return _victory(user_id, encounter, log)
 
-    # Эффекты домена в конце хода
     domain_killed = _process_domain_turn(user_id, player, encounter, log)
     if domain_killed:
         encounter = database.get_encounter(user_id)

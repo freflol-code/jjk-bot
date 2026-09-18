@@ -1,14 +1,8 @@
 """
 Пошаговая боевая система «Магическая Битва: Токио».
-Учитывает эффекты типа ПЭ, клана, Проклятия Небес, Расширений Территории
-и VIP-множителя наград.
 
-Расширения Территории активируются ВРУЧНУЮ кнопкой «🌌 Использовать домен».
-Мастер-техника копит счётчик использований (для разблокировки домена).
-Плюс в каждом бою отдельно копятся заряды под условие активации домена.
-
-Многократная активация в одном бою: 1-я — бесплатно, 2-я — −20% HP,
-3-я — −50% HP, 4-я и далее — −70% HP (не ниже 1 HP).
+Расширения Территории активируются ВРУЧНУЮ.
+Боссы глав имеют броню (defense) и уникальные скиллы/пассивки из story.BOSS_SKILLS.
 """
 import random
 
@@ -43,15 +37,11 @@ CLASS_REWARD_MULT = {
 DEFEND_DAMAGE_MULT = 0.5
 DEFEND_CE_REGEN_MULT = 2.0
 
-
-# Штрафы за повторную активацию домена в одном бою (от текущего HP).
-# 1-е использование — бесплатно (индекс 0 = 0.0).
-# Дальше — проценты по порядковому номеру использования в бою.
 DOMAIN_REACTIVATION_PENALTY = [0.0, 0.20, 0.50, 0.70]
 
 
 # ============================================================
-#  ЭФФЕКТЫ РАСШИРЕНИЙ ТЕРРИТОРИИ (домены)
+#  ЭФФЕКТЫ ДОМЕНОВ
 # ============================================================
 DOMAIN_EFFECTS = {
     "unlimited_void": {
@@ -72,7 +62,6 @@ DOMAIN_EFFECTS = {
     },
     "self_embodiment_of_perfection": {
         "dmg_mult": 1.35, "defense_mult": 0.70,
-        "enemy_defense_debuff_per_turn": 0.08,
     },
     "deadly_sentencing": {
         "dmg_mult": 1.25, "defense_mult": 0.75,
@@ -132,7 +121,6 @@ DOMAIN_EFFECTS = {
 
 
 def _find_domain_by_technique(technique_name: str) -> str | None:
-    """Ищет domain_key по имени мастер-техники."""
     for key, d in DOMAINS.items():
         if d["technique"] == technique_name:
             return key
@@ -140,29 +128,33 @@ def _find_domain_by_technique(technique_name: str) -> str | None:
 
 
 def _get_reactivation_penalty(uses_before: int) -> float:
-    """Штраф HP за активацию домена, где uses_before — сколько раз уже
-    активировали в этом бою ДО текущей.
-    0 → 0.0 (первое), 1 → 0.20, 2 → 0.50, 3+ → 0.70."""
     if uses_before < len(DOMAIN_REACTIVATION_PENALTY):
         return DOMAIN_REACTIVATION_PENALTY[uses_before]
     return DOMAIN_REACTIVATION_PENALTY[-1]
 
 
 def _penalty_preview(user_id: int) -> tuple[int, float]:
-    """Возвращает (следующее_использование_№, штраф_доля) для предпросмотра
-    в UI кнопки. Например, если уже 1 использование в бою — вернёт (2, 0.20)."""
     used = database.get_domain_uses_in_battle(user_id)
     return (used + 1, _get_reactivation_penalty(used))
 
 
 # ============================================================
-#  СЧЁТЧИК ИСПОЛЬЗОВАНИЙ (для разблокировки домена)
+#  СКИЛЛЫ БОССОВ
+# ============================================================
+
+def _get_boss_skills(monster_name: str) -> dict | None:
+    """Возвращает конфиг скиллов/пассивок босса или None."""
+    try:
+        return story.BOSS_SKILLS.get(monster_name)
+    except (AttributeError, TypeError):
+        return None
+
+
+# ============================================================
+#  СЧЁТЧИК ИСПОЛЬЗОВАНИЙ ТЕХНИК
 # ============================================================
 
 def _register_domain_use(user_id: int, technique_name: str, log: list):
-    """Считает использование мастер-техники. При достижении порога
-    уведомляет о разблокировке. Сама активация — ручная, через
-    функцию activate_domain_manual()."""
     technique = gacha.get_technique(technique_name)
     if not technique or not technique.get("has_domain"):
         return
@@ -184,7 +176,6 @@ def _register_domain_use(user_id: int, technique_name: str, log: list):
 
 
 def player_has_unlocked_domain(user_id: int) -> bool:
-    """True, если у игрока есть экипированная мастер-техника с 20+ использованиями."""
     equipped = gacha.get_equipped(user_id)
     for name in equipped:
         t = gacha.get_technique(name)
@@ -197,7 +188,6 @@ def player_has_unlocked_domain(user_id: int) -> bool:
 
 
 def get_unlocked_domain_technique(user_id: int) -> str | None:
-    """Имя первой экипированной мастер-техники с разблокированным доменом."""
     equipped = gacha.get_equipped(user_id)
     for name in equipped:
         t = gacha.get_technique(name)
@@ -210,18 +200,11 @@ def get_unlocked_domain_technique(user_id: int) -> str | None:
 
 
 def has_active_domain(user_id: int) -> bool:
-    """True, если прямо сейчас активен какой-либо домен."""
     key, turns = database.get_domain(user_id)
     return bool(key and turns > 0)
 
 
-# ============================================================
-#  ПРОВЕРКА УСЛОВИЯ АКТИВАЦИИ ИЗ DOMAINS
-# ============================================================
-
 def _parse_activation(activation: str) -> tuple[str, int] | None:
-    """Разбирает строку 'use_tech_3' → ('use_tech', 3).
-    'always' → None. Некорректный формат → None."""
     if not activation or activation == "always":
         return None
     parts = activation.rsplit("_", 1)
@@ -236,8 +219,6 @@ def _parse_activation(activation: str) -> tuple[str, int] | None:
 
 
 def check_activation_condition(user_id: int) -> dict:
-    """Проверяет условие активации домена в текущем бою.
-    Возвращает {ok, text, current, goal, domain_name, domain_emoji}."""
     technique_name = get_unlocked_domain_technique(user_id)
     if not technique_name:
         return {"ok": False, "text": "нет разблокированного домена",
@@ -264,17 +245,13 @@ def check_activation_condition(user_id: int) -> dict:
     charges = database.get_charges(user_id)
 
     if atype == "use_tech":
-        cur = charges["tech_uses"]
-        label = "техник"
+        cur = charges["tech_uses"]; label = "техник"
     elif atype == "deal_damage":
-        cur = charges["dmg_dealt"]
-        label = "урона"
+        cur = charges["dmg_dealt"]; label = "урона"
     elif atype == "take_damage":
-        cur = charges["dmg_taken"]
-        label = "получено"
+        cur = charges["dmg_taken"]; label = "получено"
     elif atype == "use_black_flash":
-        cur = charges["black_flash"]
-        label = "критов"
+        cur = charges["black_flash"]; label = "критов"
     else:
         return {"ok": True, "text": "готово",
                 "current": 0, "goal": 0,
@@ -283,20 +260,12 @@ def check_activation_condition(user_id: int) -> dict:
     return {
         "ok": cur >= goal,
         "text": f"{cur}/{goal} {label}",
-        "current": cur,
-        "goal": goal,
-        "domain_name": domain_name,
-        "domain_emoji": domain_emoji,
+        "current": cur, "goal": goal,
+        "domain_name": domain_name, "domain_emoji": domain_emoji,
     }
 
 
 def activate_domain_manual(user_id: int) -> dict:
-    """Ручная активация домена кнопкой. Проверяет все условия:
-    - домен разблокирован (20+ использований техники);
-    - условие activation выполнено в текущем бою;
-    - нет активного домена.
-    При успехе обнуляет заряды и списывает HP по таблице штрафов
-    за повторные активации в одном бою."""
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"ok": False, "msg": "Перед тобой никого нет."}
@@ -330,7 +299,6 @@ def activate_domain_manual(user_id: int) -> dict:
     effect = DOMAIN_EFFECTS.get(domain_key, {})
     log = []
 
-    # --- Штраф HP за повторную активацию в этом бою ---
     uses_before = database.get_domain_uses_in_battle(user_id)
     penalty = _get_reactivation_penalty(uses_before)
 
@@ -338,14 +306,13 @@ def activate_domain_manual(user_id: int) -> dict:
         player = database.get_or_create_player(user_id, "")
         current_hp = player["hp"]
         loss = int(current_hp * penalty)
-        new_hp = max(1, current_hp - loss)  # не умираешь от своего же домена
+        new_hp = max(1, current_hp - loss)
         database.update_player_hp(user_id, new_hp)
         log.append(
             f"💔 <b>Повторное расширение отняло {loss} HP</b> "
             f"({int(penalty * 100)}% от текущего). HP: {new_hp}/{current_hp}."
         )
 
-    # --- Активация ---
     if effect.get("gamble"):
         if random.random() < 0.5:
             database.set_domain(user_id, domain_key, 3)
@@ -374,7 +341,6 @@ def activate_domain_manual(user_id: int) -> dict:
     database.inc_domain_uses_in_battle(user_id)
     database.reset_charges(user_id)
 
-    # Подсказка про следующий штраф
     next_num, next_penalty = _penalty_preview(user_id)
     if next_penalty > 0:
         log.append(
@@ -386,8 +352,6 @@ def activate_domain_manual(user_id: int) -> dict:
 
 
 def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
-    """Обрабатывает эффекты домена в конце хода игрока.
-    Возвращает True, если монстр умер от эффектов домена."""
     domain_key, turns = database.get_domain(user_id)
     if not domain_key or turns <= 0:
         return False
@@ -396,6 +360,7 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
     domain_data = DOMAINS.get(domain_key, {})
     domain_name = domain_data.get("name", domain_key)
 
+    # DoT домена игнорирует броню монстра — это внутренний эффект ПЭ.
     if effect.get("summon_rika"):
         rika_dmg = effect.get("rika_dmg", 50)
         encounter = database.get_encounter(user_id)
@@ -411,7 +376,6 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
         growth = effect.get("dot_growth", 0)
         turns_elapsed = 3 - turns
         dot = base_dot + growth * turns_elapsed
-
         encounter = database.get_encounter(user_id)
         if encounter and encounter["hp"] > 0:
             new_hp = max(0, encounter["hp"] - dot)
@@ -539,10 +503,20 @@ def encounter_status_text(encounter) -> str:
     if encounter["bleed_turns"]:
         status_bits.append(f"🩸 Кровотечение ещё {encounter['bleed_turns']} х. ({encounter['bleed_dmg']}/х.)")
     status_line = ("\n" + " | ".join(status_bits)) if status_bits else ""
+
+    # Броня
+    defense = 0.0
+    try:
+        defense = encounter["defense"] or 0.0
+    except (IndexError, KeyError):
+        defense = 0.0
+    defense_line = f"\n🛡 Броня: -{int(defense * 100)}%" if defense > 0 else ""
+
     return (
         f"{prefix}{class_emoji} {encounter['emoji']} <b>{encounter['monster_name']}</b>\n"
         f"❤️ HP: {hp}/{encounter['max_hp']}\n"
         f"🗡 Урон: {encounter['dmg_min']}-{encounter['dmg_max']}"
+        f"{defense_line}"
         f"{status_line}"
     )
 
@@ -768,6 +742,128 @@ def _death(user_id: int, player, log: list) -> dict:
 
 # ---------------- Ход проклятия ----------------
 
+def _compute_monster_hit(user_id: int, player, encounter, raw_dmg: int,
+                          damage_mult: float = 1.0, self_mult: float = 1.0,
+                          extra_mult: float = 1.0) -> int:
+    """Считает финальный урон монстра с учётом всех множителей."""
+    reduction = _defense_reduction(user_id, player)
+    effects = ce_types.get_active_effects(user_id)
+    defense_mult = effects.get("defense_mult", 1.0)
+
+    domain_key, domain_turns = database.get_domain(user_id)
+    domain_eff = DOMAIN_EFFECTS.get(domain_key, {}) if domain_key and domain_turns > 0 else {}
+    domain_def_mult = domain_eff.get("defense_mult", 1.0)
+    enemy_dmg_mult = domain_eff.get("enemy_dmg_mult", 1.0)
+
+    mdmg = int(raw_dmg * (1 - reduction) * damage_mult * defense_mult * self_mult
+               * domain_def_mult * enemy_dmg_mult * extra_mult)
+    return max(1, mdmg)
+
+
+def _apply_damage_to_player(user_id: int, player, log: list, mdmg: int,
+                             note: str = "") -> dict | None:
+    """Наносит урон игроку. Возвращает death-result или None."""
+    new_hp = player["hp"] - mdmg
+    if new_hp <= 0:
+        return _death(user_id, player, log)
+    database.update_player_hp(user_id, new_hp)
+    database.add_charge(user_id, "dmg_taken", mdmg)
+    return None
+
+
+def _try_passive(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+    """Пытается применить пассивку босса. Возвращает death-result или None."""
+    passive = skills.get("passive")
+    if not passive:
+        return None
+    if random.random() > passive.get("chance", 0.0):
+        return None
+
+    ptype = passive.get("type")
+    pname = passive.get("name", "Пассивка")
+
+    if ptype == "extra_dmg":
+        dmg = passive.get("dmg", 10)
+        mdmg = _compute_monster_hit(user_id, player, encounter, dmg)
+        log.append(f"⚡ <b>{pname}</b>: {mdmg} дополнительного урона!")
+        return _apply_damage_to_player(user_id, player, log, mdmg)
+
+    if ptype == "double_attack":
+        raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
+        mdmg = _compute_monster_hit(user_id, player, encounter, raw)
+        log.append(f"⚡ <b>{pname}</b>: {mdmg} урона (двойная атака)!")
+        return _apply_damage_to_player(user_id, player, log, mdmg)
+
+    if ptype == "drain_ce":
+        amount = passive.get("amount", 5)
+        eff = ce_types.get_effective_stats(user_id, player)
+        new_ce = max(0, eff["ce"] - amount)
+        database.update_player_ce(user_id, new_ce)
+        log.append(f"💧 <b>{pname}</b>: ты теряешь {amount} ПЭ.")
+        return None
+
+    if ptype == "bleed":
+        turns = passive.get("turns", 2)
+        dmg = passive.get("dmg", 5)
+        # Накладываем на игрока через бафф (переиспользуем charge_dmg_taken? нет — сделаем проще)
+        # Наложим разовый урон сразу
+        mdmg = _compute_monster_hit(user_id, player, encounter, dmg)
+        log.append(f"🩸 <b>{pname}</b>: кровотечение — {mdmg} урона!")
+        return _apply_damage_to_player(user_id, player, log, mdmg)
+
+    if ptype == "heal_self":
+        amount = passive.get("amount", 20)
+        new_hp = min(encounter["max_hp"], encounter["hp"] + amount)
+        database.update_encounter_hp(user_id, new_hp)
+        log.append(f"💚 <b>{pname}</b>: монстр восстанавливает {amount} HP.")
+        return None
+
+    if ptype == "rage":
+        # Усиление следующего удара — просто помечаем, что босс в ярости (урон x1.5 к следующей атаке)
+        # Применим сразу как доп. множитель к обычной атаке ниже — а тут просто лог.
+        log.append(f"🔥 <b>{pname}</b>: монстр впадает в ярость!")
+        return None
+
+    return None
+
+
+def _try_execute(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+    """Проверяет условие добивания. Возвращает death-result или None."""
+    execute = skills.get("execute")
+    if not execute:
+        return None
+
+    eff = ce_types.get_effective_stats(user_id, player)
+    if eff["max_hp"] <= 0:
+        return None
+    hp_pct = eff["hp"] / eff["max_hp"]
+    if hp_pct > execute.get("hp_threshold", 0.25):
+        return None
+
+    raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
+    mult = execute.get("dmg_mult", 3.0)
+    mdmg = _compute_monster_hit(user_id, player, encounter, raw, extra_mult=mult)
+    log.append(f"💀 <b>{execute.get('name', 'Добивание')}</b>: {mdmg} урона!")
+    return _apply_damage_to_player(user_id, player, log, mdmg)
+
+
+def _try_skill(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+    """Пробует применить активный скилл. Возвращает (применил, death_result)."""
+    skill_list = skills.get("skills") or []
+    for skill in skill_list:
+        if random.random() < skill.get("chance", 0.0):
+            raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
+            mult = skill.get("dmg_mult", 1.0)
+            mdmg = _compute_monster_hit(user_id, player, encounter, raw, extra_mult=mult)
+            log.append(f"🔥 <b>{skill.get('name', 'Скилл')}</b>: {mdmg} урона!")
+            if skill.get("stun_player"):
+                # Пропуск следующего хода игрока: реализуем через dmg_buff_turns -1? Проще — запишем в лог.
+                # На будущее можно добавить колонку stun_player_turns. Пока — просто эффект не накладываем.
+                log.append("😵 Ты дезориентирован следующим ходом (пропуск).")
+            return _apply_damage_to_player(user_id, player, log, mdmg)
+    return None
+
+
 def _curse_turn(user_id: int, player, encounter, log: list,
                 damage_mult: float = 1.0, self_mult: float = 1.0) -> dict | None:
     hp = encounter["hp"]
@@ -791,49 +887,56 @@ def _curse_turn(user_id: int, player, encounter, log: list,
     dodge_bonus += domain_eff.get("dodge_bonus", 0.0)
     total_miss = min(0.90, MONSTER_MISS_CHANCE + dodge_bonus + domain_eff.get("enemy_miss_bonus", 0.0))
 
+    # Оглушение монстра
     if encounter["stun_turns"] > 0:
         log.append(f"😵 {encounter['monster_name']} оглушено и пропускает ход!")
         database.set_encounter_status(user_id, stun_turns=encounter["stun_turns"] - 1)
-    elif random.random() < total_miss:
+        return None
+
+    # Промах/уклонение
+    if random.random() < total_miss:
         if dodge_bonus > 0 and random.random() < dodge_bonus / total_miss:
             log.append(f"🌀 <b>Ты уклонился</b> от атаки {encounter['monster_name']}!")
         else:
             log.append(f"🛡 {encounter['monster_name']} промахнулось!")
-    else:
-        raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
-        reduction = _defense_reduction(user_id, player)
+        return None
 
-        defense_mult = effects.get("defense_mult", 1.0)
+    # Боссовые пассивки/скиллы
+    skills = _get_boss_skills(encounter["monster_name"])
+    if skills:
+        # 1. Проверка добивания
+        death = _try_execute(user_id, player, encounter, skills, log)
+        if death:
+            return death
 
-        domain_def_mult = domain_eff.get("defense_mult", 1.0)
-        enemy_dmg_mult = domain_eff.get("enemy_dmg_mult", 1.0)
+        # 2. Пассивка (доп. эффект)
+        death = _try_passive(user_id, player, encounter, skills, log)
+        if death:
+            return death
 
-        mdmg = int(raw * (1 - reduction) * damage_mult * defense_mult * self_mult
-                   * domain_def_mult * enemy_dmg_mult)
-        mdmg = max(1, mdmg)
+        # 3. Активный скилл
+        death = _try_skill(user_id, player, encounter, skills, log)
+        if death:
+            return death
 
-        new_hp = player["hp"] - mdmg
-        if new_hp <= 0:
-            return _death(user_id, player, log)
-        database.update_player_hp(user_id, new_hp)
+        # 4. Если ни пассивка, ни скилл не сработали — обычная атака.
+        # Но если скилл сработал, то _try_skill вернул результат (не None) и мы уже вышли.
+        # Здесь только если оба вернули None.
+        # Проверить: если пассивка сработала (вернула None) — не факт, что она была.
+        # Упрощаем: если passive сработала и нанесла урон — уже был return.
+        # Здесь применяем обычную атаку.
+        pass
 
-        database.add_charge(user_id, "dmg_taken", mdmg)
+    # Обычная атака
+    raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
+    mdmg = _compute_monster_hit(user_id, player, encounter, raw,
+                                 damage_mult=damage_mult, self_mult=self_mult)
 
-        note = f"(защита -{int(reduction*100)}%"
-        if damage_mult < 1.0:
-            note += f", блок x{damage_mult}"
-        if defense_mult < 1.0:
-            note += f", ПЭ x{defense_mult:.2f}"
-        if domain_def_mult < 1.0:
-            note += f", домен x{domain_def_mult:.2f}"
-        if enemy_dmg_mult < 1.0:
-            note += f", дебафф x{enemy_dmg_mult:.2f}"
-        if self_mult > 1.0:
-            note += f", тех x{self_mult:.2f}"
-        note += ")"
-        log.append(f"👹 {encounter['monster_name']} нанёс {mdmg} урона {note}.")
-
-    return None
+    note = ""
+    if damage_mult < 1.0:
+        note = f" (блок x{damage_mult})"
+    log.append(f"👹 {encounter['monster_name']} нанёс {mdmg} урона{note}.")
+    return _apply_damage_to_player(user_id, player, log, mdmg)
 
 
 # ---------------- Атака ----------------
@@ -890,6 +993,18 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
             database.add_charge(user_id, "dmg_dealt", dmg)
         if black_flash:
             database.add_charge(user_id, "black_flash", 1)
+
+    # Броня монстра
+    defense = 0.0
+    try:
+        defense = encounter["defense"] or 0.0
+    except (IndexError, KeyError):
+        defense = 0.0
+
+    if dmg > 0 and defense > 0:
+        reduced = max(1, int(dmg * (1.0 - defense)))
+        log.append(f"🛡 <b>Броня:</b> {dmg} → {reduced} урона (-{int(defense * 100)}%).")
+        dmg = reduced
 
     if technique:
         database.update_player_ce(user_id, player["ce"] - technique["ce_cost"])

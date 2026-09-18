@@ -107,6 +107,9 @@ def init_db():
     _ensure_column(conn, "encounters", "domain_key", "domain_key TEXT")
     _ensure_column(conn, "encounters", "domain_turns", "domain_turns INTEGER NOT NULL DEFAULT 0")
 
+    # --- Миграция player_techniques: счётчик использований для доменов ---
+    _ensure_column(conn, "player_techniques", "uses", "uses INTEGER NOT NULL DEFAULT 0")
+
     # --- Оружие ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_weapons (
@@ -508,6 +511,37 @@ def has_technique(user_id: int, technique_name: str) -> bool:
         (user_id, technique_name),
     )
     return cur.fetchone() is not None
+
+
+def inc_technique_uses(user_id: int, technique_name: str) -> int:
+    """Увеличивает счётчик использований техники на 1.
+    Возвращает новое значение. Если техники нет — 0."""
+    conn = get_conn()
+    conn.execute(
+        "UPDATE player_techniques SET uses = uses + 1 "
+        "WHERE user_id = ? AND technique_name = ?",
+        (user_id, technique_name),
+    )
+    conn.commit()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT uses FROM player_techniques WHERE user_id = ? AND technique_name = ?",
+        (user_id, technique_name),
+    )
+    row = cur.fetchone()
+    return row["uses"] if row else 0
+
+
+def get_technique_uses(user_id: int, technique_name: str) -> int:
+    """Сколько раз игрок использовал эту технику. 0 — если техники нет."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT uses FROM player_techniques WHERE user_id = ? AND technique_name = ?",
+        (user_id, technique_name),
+    )
+    row = cur.fetchone()
+    return row["uses"] if row else 0
 
 
 def get_equipped_techniques(user_id: int):

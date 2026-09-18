@@ -1,8 +1,11 @@
 """
-Гача врождённых техник.
+Гача врождённых техник с pity-системой.
 
 Данные 120 техник вынесены в techniques_data.py, здесь только логика:
-ролл редкости, крутки x1/x10, экип в боевой набор и рефанд за дубликаты.
+ролл редкости, крутки x1/x10, экип в боевой набор, рефанд и pity.
+
+Pity: каждые 50 круток без легендарки/мифика — гарант (80% легендарка,
+20% мифик). Счётчик хранится в таблице player_pity.
 
 Чёрная Вспышка — не техника из гачи, а боевой крит (см. combat.py).
 """
@@ -13,7 +16,11 @@ from techniques_data import TECHNIQUES
 from config import (
     GACHA_ROLL_COST, GACHA_ROLL_COST_X10, GACHA_RARITY_WEIGHTS,
     MAX_EQUIPPED_TECHNIQUES,
+    GACHA_PITY_LIMIT, GACHA_PITY_LEGEND_WEIGHT, GACHA_PITY_MYTH_WEIGHT,
 )
+
+LEGEND_RARITY = "Легендарная (Особый класс)"
+MYTH_RARITY = "Мифическая"
 
 
 def get_technique(name: str) -> dict | None:
@@ -24,20 +31,35 @@ def _pool_by_rarity(rarity: str):
     return [name for name, t in TECHNIQUES.items() if t["rarity"] == rarity]
 
 
-def _roll_rarity() -> str:
+def _roll_rarity_with_pity(user_id: int) -> str:
+    """Роллит редкость с учётом pity. Обновляет счётчик в БД."""
+    pity = database.get_pity(user_id)
+    if pity >= GACHA_PITY_LIMIT - 1:
+        database.reset_pity(user_id)
+        return random.choices(
+            [LEGEND_RARITY, MYTH_RARITY],
+            weights=[GACHA_PITY_LEGEND_WEIGHT, GACHA_PITY_MYTH_WEIGHT],
+            k=1,
+        )[0]
+
     rarities = list(GACHA_RARITY_WEIGHTS.keys())
     weights = list(GACHA_RARITY_WEIGHTS.values())
-    return random.choices(rarities, weights=weights, k=1)[0]
+    rarity = random.choices(rarities, weights=weights, k=1)[0]
+
+    if rarity in (LEGEND_RARITY, MYTH_RARITY):
+        database.reset_pity(user_id)
+    else:
+        database.inc_pity(user_id)
+    return rarity
 
 
 def roll_once(user_id: int) -> dict:
-    """Одна прокрутка гачи."""
     player = database.get_or_create_player(user_id, "")
     if player["gold"] < GACHA_ROLL_COST:
         return {"ok": False, "msg": f"Не хватает очков Ассоциации. Нужно {GACHA_ROLL_COST}💠."}
 
     database.add_gold(user_id, -GACHA_ROLL_COST)
-    rarity = _roll_rarity()
+    rarity = _roll_rarity_with_pity(user_id)
     pool = _pool_by_rarity(rarity)
     name = random.choice(pool)
     technique = TECHNIQUES[name]
@@ -57,6 +79,7 @@ def roll_once(user_id: int) -> dict:
         "emoji": technique["emoji"],
         "duplicate": not is_new,
         "refund": refund,
+        "pity": database.get_pity(user_id),
     }
 
 
@@ -68,7 +91,7 @@ def roll_x10(user_id: int) -> dict:
     database.add_gold(user_id, -GACHA_ROLL_COST_X10)
     results = []
     for _ in range(10):
-        rarity = _roll_rarity()
+        rarity = _roll_rarity_with_pity(user_id)
         pool = _pool_by_rarity(rarity)
         name = random.choice(pool)
         technique = TECHNIQUES[name]
@@ -84,13 +107,17 @@ def roll_x10(user_id: int) -> dict:
 
     quests.add_progress(user_id, "gacha_roll", amount=10)
 
-    return {"ok": True, "results": results}
+    return {"ok": True, "results": results, "pity": database.get_pity(user_id)}
 
 
 # ---------------- Боевой набор техник ----------------
 
 def get_equipped(user_id: int) -> list[str]:
-    return [row["technique_name"] for row in database.get_equipped_techniques(user_id)]
+    """Возвращает боевой набор, отфильтрованный по актуальному TECHNIQUES.
+    Техники, которых больше нет в данных (старые сохранения), тихо выпадают
+    из списка — но остаются в БД до чистки скриптом clean_equipped.py."""
+    names = [row["technique_name"] for row in database.get_equipped_techniques(user_id)]
+    return [n for n in names if n in TECHNIQUES]
 
 
 def equip(user_id: int, technique_name: str) -> dict:

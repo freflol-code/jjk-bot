@@ -19,7 +19,7 @@ if not BOT_TOKEN:
 DB_PATH = "data/game.db"
 
 # --- Мир и перемещение ---
-MAX_WORLD = 260
+MAX_WORLD = 1000
 WORLD_STEP_PER_LEVEL = 50
 MOVE_STEP = 10
 

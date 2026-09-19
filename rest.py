@@ -1,15 +1,17 @@
 """
 rest.py — отдых в Токийской школе магии.
 
-Игрок, находясь в районе jujutsu_high (X: -10..10), может нажать
-«🧘 Отдохнуть» и мгновенно восстановить HP и Проклятую Энергию (ПЭ).
-Кулдаун — 150 секунд (2.5 минуты).
+Игрок, находясь в районе jujutsu_high (X: -25..25), может нажать
+«🧘 Отдохнуть» и мгновенно восстановить HP и Проклятую Энергию (ПЭ)
+до ЭФФЕКТИВНОГО максимума (учитывая hp_mult/ce_mult от Проклятий Небес,
+например Мехамару). Кулдаун — 150 секунд (2.5 минуты).
 
 Колонка players.last_rest_at создаётся лениво при первом обращении.
 """
 import time
 
 import database
+from ce_types import get_effective_stats
 
 
 REST_COOLDOWN_SECONDS = 150  # 2.5 минуты
@@ -57,7 +59,7 @@ def _fmt_time(seconds: int) -> str:
 
 
 def try_rest(user_id: int) -> dict:
-    """Пытается отдохнуть. Восстанавливает HP и ПЭ полностью."""
+    """Пытается отдохнуть. Восстанавливает HP и ПЭ до ЭФФЕКТИВНОГО максимума."""
     _ensure_column()
     player = database.get_or_create_player(user_id, "")
 
@@ -68,28 +70,33 @@ def try_rest(user_id: int) -> dict:
             "msg": f"⏳ Годжо: «Дай себе передохнуть. Ещё {_fmt_time(remaining)} — и снова в бой.»",
         }
 
-    hp_full = player["hp"] >= player["max_hp"]
-    ce_full = player["ce"] >= player["max_ce"]
+    # Эффективные максимумы с учётом проклятий Небес (Мехамару/Тоджи)
+    eff = get_effective_stats(user_id, player)
+    eff_max_hp = eff["max_hp"]
+    eff_max_ce = eff["max_ce"]
+
+    hp_full = player["hp"] >= eff_max_hp
+    ce_full = player["ce"] >= eff_max_ce
     if hp_full and ce_full:
         return {
             "ok": False,
             "msg": "💚 HP и ПЭ уже полны. Нечего восстанавливать — иди патрулируй!",
         }
 
-    hp_restored = player["max_hp"] - player["hp"]
-    ce_restored = player["max_ce"] - player["ce"]
+    hp_restored = max(0, eff_max_hp - player["hp"])
+    ce_restored = max(0, eff_max_ce - player["ce"])
 
     conn = database.get_conn()
     conn.execute(
         "UPDATE players SET hp = ?, ce = ?, last_rest_at = ? WHERE user_id = ?",
-        (player["max_hp"], player["max_ce"], int(time.time()), user_id),
+        (eff_max_hp, eff_max_ce, int(time.time()), user_id),
     )
     conn.commit()
 
     lines = [
         "🧘 «Передохнул? Пойдём, район сам себя не зачистит.»",
-        f"❤️ Восстановлено {hp_restored} HP (теперь {player['max_hp']}/{player['max_hp']})",
-        f"🔵 Восстановлено {ce_restored} ПЭ (теперь {player['max_ce']}/{player['max_ce']})",
+        f"❤️ Восстановлено {hp_restored} HP (теперь {eff_max_hp}/{eff_max_hp})",
+        f"🔵 Восстановлено {ce_restored} ПЭ (теперь {eff_max_ce}/{eff_max_ce})",
     ]
     return {
         "ok": True,

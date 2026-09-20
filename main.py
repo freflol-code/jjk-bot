@@ -23,6 +23,7 @@ import config
 import database
 import monsters
 import combat
+import subway
 import gacha
 import consumables
 import bosses
@@ -94,6 +95,7 @@ def format_active_buffs(user_id: int) -> str:
 
 
 def _domain_button(user_id: int) -> tuple[str, str]:
+    """Кнопка домена с учётом ПЭ и Проклятия Небес."""
     dk, dt = database.get_domain(user_id)
     if dk and dt > 0:
         return (f"🌌 Домен активен ({dt} х.)", "noop")
@@ -102,6 +104,16 @@ def _domain_button(user_id: int) -> tuple[str, str]:
     if technique_name:
         cond = combat.check_activation_condition(user_id)
         if cond["ok"]:
+            player_now = database.get_or_create_player(user_id, "")
+            eff = ce_types.get_effective_stats(user_id, player_now)
+
+            if eff["max_ce"] <= 0:
+                return ("🌌 Нет ПЭ (Проклятие Небес)", "domain_info")
+
+            domain_cost = max(1, int(eff["max_ce"] * 0.60))
+            if eff["ce"] < domain_cost:
+                return (f"🌌 Мало ПЭ ({eff['ce']}/{domain_cost}🔵)", "domain_info")
+
             uses_before = database.get_domain_uses_in_battle(user_id)
             penalty = combat._get_reactivation_penalty(uses_before)
             if penalty > 0:
@@ -235,6 +247,9 @@ def main_keyboard(user_id: int):
     rows.append([
         InlineKeyboardButton("👤 Профиль", callback_data="profile_menu"),
         InlineKeyboardButton("🗺 Карта", callback_data="map"),
+    ])
+    rows.append([
+        InlineKeyboardButton("🚇 Метро", callback_data="subway_open"),
     ])
 
     active_raid = raid.get_active_raid_for_user(user_id)
@@ -608,6 +623,15 @@ def story_temp_keyboard(user_id: int) -> InlineKeyboardMarkup:
             rows.append([InlineKeyboardButton(
                 "👁 Войти к боссу", callback_data="story_temp_boss",
             )])
+
+    # Кнопка «Поговорить» — если в локации есть NPC под задачу talk
+    npc = story.get_current_npc(user_id)
+    if npc:
+        rows.append([InlineKeyboardButton(
+            f"💬 Поговорить с {npc['name']}",
+            callback_data="story_temp_talk",
+        )])
+
     rows.append([InlineKeyboardButton("🩸 Патрулирование", callback_data="story_temp_patrol")])
     rows.append([InlineKeyboardButton("⬅️ Вернуться в школу", callback_data="story_exit_temp")])
     return InlineKeyboardMarkup(rows)
@@ -631,6 +655,27 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(vip_label, callback_data="vip_info"),
         InlineKeyboardButton("💰 Донат", callback_data="donate_menu"),
     ])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
+    return InlineKeyboardMarkup(rows)
+
+
+def subway_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    player = database.get_or_create_player(user_id, "")
+    stations = subway.list_reachable(player["x"], player["gold"])
+
+    rows = []
+    for s in stations:
+        if s["is_current"]:
+            label = f"📍 {s['emoji']} {s['name']} — ты здесь"
+            cb = "noop"
+        elif s["affordable"]:
+            label = f"{s['emoji']} {s['name']} — {s['fare']}💠"
+            cb = f"subway_travel:{s['district_id']}"
+        else:
+            label = f"🔒 {s['emoji']} {s['name']} — {s['fare']}💠"
+            cb = "subway_no_money"
+        rows.append([InlineKeyboardButton(label, callback_data=cb)])
+
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
     return InlineKeyboardMarkup(rows)
 
@@ -1397,7 +1442,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     in_raid_now = raid.get_active_raid_for_user(user_id)
     if (not in_raid_now
-            and -10 <= x <= 10
+            and -25 <= x <= 25
             and not story.is_in_temp(user_id)
             and not database.get_encounter(user_id)):
         event = story.check_and_finish(user_id)
@@ -1615,10 +1660,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             uses_before = database.get_domain_uses_in_battle(user_id)
             penalty = combat._get_reactivation_penalty(uses_before)
 
+            player_now = database.get_or_create_player(user_id, "")
+            eff = ce_types.get_effective_stats(user_id, player_now)
+            domain_cost = max(1, int(eff["max_ce"] * 0.60)) if eff["max_ce"] > 0 else 0
+
             lines = [f"{cond['domain_emoji']} <b>{cond['domain_name']}</b>", ""]
+            lines.append(
+                f"🔵 Стоимость активации: <b>{domain_cost} ПЭ</b> "
+                f"(60% от максимума). Сейчас у тебя: <b>{eff['ce']} ПЭ</b>."
+            )
+            lines.append("")
+
             if cond["ok"]:
                 lines.append(f"✅ Условие активации выполнено: <b>{cond['text']}</b>.")
-                if penalty > 0:
+                if eff["max_ce"] <= 0:
+                    lines.append("❌ У тебя нет ПЭ (Проклятие Небес) — домен недоступен.")
+                elif eff["ce"] < domain_cost:
+                    lines.append("❌ Не хватает ПЭ для активации.")
+                elif penalty > 0:
                     lines.append(
                         f"⚠️ Сейчас в бою уже активировали {uses_before} раз — "
                         f"повторное расширение отнимет <b>{int(penalty*100)}% HP</b>."
@@ -1655,6 +1714,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, "\n".join(lines), kb_for(user_id))
         return
 
+    # ================= МЕТРО =================
+
+    if data == "subway_open":
+        text = subway.format_subway_text(user_id)
+        await render(query, context, text, subway_keyboard(user_id))
+        return
+
+    if data.startswith("subway_travel:"):
+        target_id = data.split(":", 1)[1]
+        result = subway.use_subway(user_id, target_id)
+
+        if not result.get("ok"):
+            text = "❌ " + result["msg"] + "\n\n" + subway.format_subway_text(user_id)
+            await render(query, context, text, subway_keyboard(user_id))
+            return
+
+        new_x = result["x"]
+        text = result["msg"] + "\n\n" + location_text(user_id, new_x)
+        await render(query, context, text, kb_for(user_id),
+                     image_path=district_image_for_x(new_x))
+        return
+
+    if data == "subway_no_money":
+        await render(
+            query, context,
+            "❌ Не хватает 💠 на этот билет.\n\n" + subway.format_subway_text(user_id),
+            subway_keyboard(user_id),
+        )
+        return
+
     # ================= ДВИЖЕНИЕ / ОТДЫХ / ПАТРУЛЬ =================
 
     if data in ("move_left", "move_right"):
@@ -1664,13 +1753,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if raw_new_x < lvl_min or raw_new_x > lvl_max:
             needed_level = player["level"] + 1
-            while needed_level <= 6:
+            while needed_level <= 20:
                 nb_min, nb_max = config.get_world_bounds(needed_level)
                 if nb_min <= raw_new_x <= nb_max:
                     break
                 needed_level += 1
 
-            if -config.MAX_WORLD <= raw_new_x <= config.MAX_WORLD and needed_level <= 6:
+            if -config.MAX_WORLD <= raw_new_x <= config.MAX_WORLD and needed_level <= 20:
                 text = (f"🚧 Дальше не пройти. Нужен уровень {needed_level} "
                         f"(у тебя {player['level']}).\n\n" + location_text(user_id, x))
             else:
@@ -1917,6 +2006,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         story.exit_temp(user_id)
         story.enter_temp(user_id)
+
+        # Регистрируем find-шаг, если он есть в текущей главе
+        story.register_find_step(user_id, temp["id"])
+
         text = (
             f"{temp['emoji']} <b>{temp['name']}</b>\n"
             f"<i>{temp['description']}</i>\n\n"
@@ -1959,12 +2052,29 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"{temp['emoji']} <b>{temp['name']}</b>\n\n🩸 Тишина... но что-то шевелится."
             await render(query, context, text, story_temp_keyboard(user_id))
             return
+
+        # Регистрируем reach-шаг при старте боя в сюжетной локации
+        story.register_reach_step(user_id, temp["id"])
+
         encounter = database.get_encounter(user_id)
         text = ("⚔️ <b>Бой начался!</b>\n\n"
                 + combat.encounter_status_text(encounter) + "\n\n"
                 + combat.player_status_text(player, user_id))
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
+
+    elif data == "story_temp_talk":
+        result = story.talk_to_current_npc(user_id)
+        if not result.get("ok"):
+            text = "❌ " + result["msg"] + "\n\n" + story.format_story_screen(user_id)
+            await render(query, context, text, story_temp_keyboard(user_id))
+            return
+
+        text = result["msg"]
+        temp = story.get_temp_district(user_id)
+        if temp:
+            text += f"\n\n{temp['emoji']} <b>{temp['name']}</b>\n<i>{temp['description']}</i>"
+        await render(query, context, text, story_temp_keyboard(user_id))
 
     elif data == "story_temp_puzzle":
         found = story.get_current_puzzle_step(user_id)
@@ -2773,18 +2883,4 @@ def main():
 
     app.job_queue.run_repeating(
         spawn_job,
-        interval=config.SPAWN_INTERVAL_SECONDS,
-        first=config.SPAWN_INTERVAL_SECONDS,
-    )
-    app.job_queue.run_repeating(
-        clear_buffs_job,
-        interval=BUFF_CLEANUP_INTERVAL,
-        first=BUFF_CLEANUP_INTERVAL,
-    )
-
-    logger.info("Бот запущен")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+        interval=

@@ -240,23 +240,11 @@ def main_keyboard(user_id: int):
     if quests.has_ready(user_id):
         quests_label = "🎁 Задания (есть награда!)"
 
-    rows.append([
-        InlineKeyboardButton(quests_label, callback_data="quests_menu"),
-        InlineKeyboardButton("📖 Сюжет", callback_data="story_menu"),
-    ])
+    rows.append([InlineKeyboardButton(quests_label, callback_data="quests_menu")])
     rows.append([
         InlineKeyboardButton("👤 Профиль", callback_data="profile_menu"),
-        InlineKeyboardButton("🗺 Карта", callback_data="map"),
-    ])
-    rows.append([
         InlineKeyboardButton("🚇 Метро", callback_data="subway_open"),
     ])
-
-    active_raid = raid.get_active_raid_for_user(user_id)
-    if active_raid:
-        rows.append([InlineKeyboardButton("👺 Вернуться в рейд", callback_data="raid_show")])
-    elif raid.can_use_fingers(user_id):
-        rows.append([InlineKeyboardButton("👺 Рейд на Сукуну", callback_data="raid_menu")])
 
     return InlineKeyboardMarkup(rows)
 
@@ -271,6 +259,7 @@ def quests_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📋 Ежедневные", callback_data="quests_daily"),
             InlineKeyboardButton("📅 Недельные", callback_data="quests_weekly"),
         ],
+        [InlineKeyboardButton("📖 Сюжет", callback_data="story_menu")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")],
     ])
 
@@ -479,6 +468,14 @@ def inventory_keyboard(user_id: int):
                 f"⚡ Призвать: {item['item_name']} x{item['quantity']}",
                 callback_data=f"summon_item:{i}",
             )])
+
+    # Рейд на Сукуну живёт в инвентаре
+    active_raid = raid.get_active_raid_for_user(user_id)
+    if active_raid:
+        rows.append([InlineKeyboardButton("👺 Вернуться в рейд", callback_data="raid_show")])
+    elif raid.can_use_fingers(user_id):
+        rows.append([InlineKeyboardButton("👺 Рейд на Сукуну", callback_data="raid_menu")])
+
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
     return InlineKeyboardMarkup(rows)
 
@@ -606,7 +603,7 @@ def story_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
                     f"📖 Отправиться: {temp['emoji']} {temp['name']}",
                     callback_data="story_enter_temp",
                 )])
-    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")])
+    rows.append([InlineKeyboardButton("⬅️ К заданиям", callback_data="quests_menu")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -624,7 +621,6 @@ def story_temp_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 "👁 Войти к боссу", callback_data="story_temp_boss",
             )])
 
-    # Кнопка «Поговорить» — если в локации есть NPC под задачу talk
     npc = story.get_current_npc(user_id)
     if npc:
         rows.append([InlineKeyboardButton(
@@ -644,6 +640,7 @@ def profile_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
             InlineKeyboardButton("🌀 Техники", callback_data="profile_techniques"),
         ],
         [InlineKeyboardButton("🏆 Таблица лидеров", callback_data="profile_leaderboard")],
+        [InlineKeyboardButton("🗺 Карта", callback_data="map")],
     ]
     if database.has_vip(user_id):
         until = database.get_vip_until(user_id)
@@ -1300,7 +1297,6 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     payload = payment.invoice_payload
     user_id = msg.from_user.id
 
-    # --- VIP ---
     if payload == VIP_PAYLOAD:
         database.add_vip_days(user_id, VIP_DURATION_DAYS)
         until = database.get_vip_until(user_id)
@@ -1314,7 +1310,6 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         )
         return
 
-    # --- Донат (💠 за звёзды) ---
     if payload.startswith(DONATE_PAYLOAD_PREFIX):
         key = payload[len(DONATE_PAYLOAD_PREFIX):]
         pkg = DONATE_PACKAGES.get(key)
@@ -1481,15 +1476,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⏳ Твои пальцы в КД ещё <b>{raid.format_cooldown(left)}</b>.\n"
                 "<i>Пальцы Сукуны добываются в сюжетных главах.</i>"
             )
-            await render(query, context, text, kb_for(user_id))
+            await render(query, context, text, inventory_keyboard(user_id))
             return
         if available == 0:
             text = (
                 "👺 <b>Рейд на Сукуну</b>\n\n"
                 "У тебя нет 🩸 Пальцев Сукуны.\n"
-                "<i>Пальцы дропают сюжетные боссы (см. «📖 Сюжет»).</i>"
+                "<i>Пальцы дропают сюжетные боссы (см. «📋 Задания → 📖 Сюжет»).</i>"
             )
-            await render(query, context, text, kb_for(user_id))
+            await render(query, context, text, inventory_keyboard(user_id))
             return
         text = (
             "👺 <b>Рейд на Сукуну</b>\n\n"
@@ -2007,7 +2002,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         story.exit_temp(user_id)
         story.enter_temp(user_id)
 
-        # Регистрируем find-шаг, если он есть в текущей главе
         story.register_find_step(user_id, temp["id"])
 
         text = (
@@ -2053,7 +2047,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, text, story_temp_keyboard(user_id))
             return
 
-        # Регистрируем reach-шаг при старте боя в сюжетной локации
         story.register_reach_step(user_id, temp["id"])
 
         encounter = database.get_encounter(user_id)
@@ -2287,10 +2280,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "quests_menu":
         text = (
             "📋 <b>Задания Годжо</b>\n\n"
-            "Годжо выдаёт 3 ежедневных и 3 недельных задания.\n"
+            "<b>📋 Ежедневные</b> — 3 задания, обновляются каждый день.\n"
+            "<b>📅 Недельные</b> — 3 задания, обновляются в понедельник.\n"
+            "<b>📖 Сюжет</b> — основная цепочка глав с уникальными боссами и головоломками.\n\n"
             "Прогресс считается автоматически, награду нужно забрать вручную.\n"
-            "💎 VIP даёт ×2 к наградам за задания.\n\n"
-            "<i>Годжо: «Работай — и я подкину тебе очков на крутки.»</i>"
+            "💎 VIP даёт ×2 к наградам за задания и главы.\n\n"
+            "<i>Годжо: «Работай — и я подкину тебе очков на крутки. А сюжет — это уже серьёзно.»</i>"
         )
         await render(query, context, text, quests_menu_keyboard())
 

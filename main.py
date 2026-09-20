@@ -2883,4 +2883,18 @@ def main():
 
     app.job_queue.run_repeating(
         spawn_job,
-        interval=
+        interval=config.SPAWN_INTERVAL_SECONDS,
+        first=config.SPAWN_INTERVAL_SECONDS,
+    )
+    app.job_queue.run_repeating(
+        clear_buffs_job,
+        interval=BUFF_CLEANUP_INTERVAL,
+        first=BUFF_CLEANUP_INTERVAL,
+    )
+
+    logger.info("Бот запущен")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()

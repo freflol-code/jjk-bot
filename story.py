@@ -15,6 +15,12 @@ story.py — сюжетные главы «Магической Битвы: То
 - HP +20% (кроме Хранителя Пальца — оставлен лёгким для новичков)
 - Урон повышен, минимальный урон подтянут почти до максимума
 - Броня (defense) 0.20–0.45, режет получаемый урон
+
+Говорящий глав:
+- Главы 1–6: Годжо (он ещё не запечатан).
+- Глава 7, 8: Кусакабе (связной Ассоциации).
+- Глава 16: Мегуми.
+- Остальные главы 7+: Нарратор (авторский текст без кавычек).
 """
 import json
 import random
@@ -24,6 +30,47 @@ import database
 
 LEVEL_CAP_BASE = 20
 LEVEL_CAP_PER_CHAPTER = 20
+
+# С этой главы Годжо запечатан и не может говорить сам.
+GOJO_SEALED_FROM = 7
+
+
+# ============================================================
+#  ГОВОРЯЩИЙ ГЛАВЫ
+# ============================================================
+def _chapter_speaker(chapter: dict) -> dict:
+    """Кто произносит интро главы.
+    Возвращает {"emoji", "name", "narrator"}.
+    narrator=True — текст читается как авторский, без «...» и без имени."""
+    num = chapter.get("num", 1)
+    if num < GOJO_SEALED_FROM:
+        return {"emoji": "💬", "name": "Годжо", "narrator": False}
+    explicit = {
+        7:  {"emoji": "📻", "name": "Кусакабе", "narrator": False},
+        8:  {"emoji": "📻", "name": "Кусакабе", "narrator": False},
+        16: {"emoji": "🐺", "name": "Мегуми",   "narrator": False},
+    }
+    return explicit.get(num, {"emoji": "📖", "name": "Нарратор", "narrator": True})
+
+
+def _format_intro_line(chapter: dict) -> str:
+    """Одна строка с интро главы — с учётом говорящего."""
+    sp = _chapter_speaker(chapter)
+    if sp["narrator"]:
+        return f"{sp['emoji']} <i>{chapter['intro']}</i>"
+    return f"{sp['emoji']} <b>{sp['name']}:</b> <i>«{chapter['intro']}»</i>"
+
+
+def _completion_quote(chapter: dict) -> str:
+    """Реплика в момент завершения главы — от того, кто «ведёт» эту главу."""
+    sp = _chapter_speaker(chapter)
+    if sp["name"] == "Годжо":
+        return "💬 <b>Годжо:</b> <i>«Неплохо. Держи, заслужил.»</i>"
+    if sp["name"] == "Кусакабе":
+        return "📻 <b>Кусакабе:</b> <i>«Живой? Хорошо. Значит, продолжаем.»</i>"
+    if sp["name"] == "Мегуми":
+        return "🐺 <b>Мегуми:</b> <i>«Один шаг сделан. Дальше будет хуже.»</i>"
+    return "📖 <i>Глава завершена. История продолжается.</i>"
 
 
 # ============================================================
@@ -394,8 +441,8 @@ CHAPTERS = [
         "title": "После Сибуи",
         "min_level": 18,
         "intro": (
-            "Барьер пал, но потери огромны. Годжо запечатан, старшие маги разбиты. "
-            "Яга-сэнсэй собирает уцелевших. Найди её и получи задание."
+            "Связь с Годжо потеряна — он запечатан. Старшие маги выведены "
+            "из строя. Яга-сэнсэй собирает уцелевших — найди её и получи задание."
         ),
         "steps": [
             {"type": "find", "target": "Руины Сибуи", "goal": 1,
@@ -438,8 +485,8 @@ CHAPTERS = [
         "title": "Охота на 1-й класс",
         "min_level": 22,
         "intro": (
-            "Ассоциация в панике. Пока готовят новый план, иди чистить район от 1-го класса. "
-            "Пригодится на будущее."
+            "Ассоциация в панике. Пока старшие готовят новый план — "
+            "чисти район от проклятий 1-го класса. Пригодится, поверь."
         ),
         "steps": [
             {"type": "kill", "target": "1-й класс", "goal": 5,
@@ -778,8 +825,8 @@ CHAPTERS = [
         "title": "Зов Мегуми",
         "min_level": 54,
         "intro": (
-            "Мегуми на связи — он в другой точке колонии и сражается с Реджи. "
-            "Ему нужна помощь. Немедленно."
+            "Я в другой точке колонии. Сражаюсь с Реджи — он сильнее, "
+            "чем я думал. Если можешь — прорывайся. Немедленно."
         ),
         "steps": [
             {"type": "find", "target": "Точка Мегуми", "goal": 1,
@@ -1345,6 +1392,13 @@ def _ensure_table():
             finished      INTEGER NOT NULL DEFAULT 0
         )
     """)
+    # Миграция: если игрок «закончил» сюжет на старом (меньшем) числе глав —
+    # снимаем флаг, чтобы он мог пройти новые главы.
+    conn.execute(
+        "UPDATE player_story SET finished = 0 "
+        "WHERE finished = 1 AND chapter_idx < ?",
+        (len(CHAPTERS),),
+    )
     conn.commit()
     _db_ready = True
 
@@ -1387,9 +1441,7 @@ def _save(user_id: int, state: dict):
 
 def get_completed_chapters(user_id: int) -> int:
     state = _get_row(user_id)
-    if state["finished"]:
-        return len(CHAPTERS)
-    return state["chapter_idx"]
+    return min(state["chapter_idx"], len(CHAPTERS))
 
 
 def get_max_level(user_id: int) -> int:
@@ -1404,7 +1456,7 @@ def is_level_capped(user_id: int) -> bool:
 
 def get_current_chapter(user_id: int) -> dict | None:
     state = _get_row(user_id)
-    if state["finished"] or state["chapter_idx"] >= len(CHAPTERS):
+    if state["chapter_idx"] >= len(CHAPTERS):
         return None
     return CHAPTERS[state["chapter_idx"]]
 
@@ -1555,13 +1607,12 @@ def format_story_screen(user_id: int) -> str:
     player = database.get_or_create_player(user_id, "")
     max_level = get_max_level(user_id)
 
-    if state["finished"]:
+    if state["finished"] or state["chapter_idx"] >= len(CHAPTERS):
         return (
             "📖 <b>Сюжет</b>\n\n"
             "🏁 <b>Все доступные главы пройдены.</b>\n\n"
             f"📈 Текущий потолок уровня: <b>{max_level}</b>\n\n"
-            "<i>Годжо: «Пока всё. Отдохни, а я подготовлю что-нибудь повеселее.»</i>\n\n"
-            "Продолжение следует..."
+            "<i>История делает паузу. Продолжение следует...</i>"
         )
 
     chapter = get_current_chapter(user_id)
@@ -1576,10 +1627,10 @@ def format_story_screen(user_id: int) -> str:
     if not level_ok:
         lines.append(f"🔒 <b>Нужен уровень {min_level}</b> (у тебя {player['level']})")
         lines.append("")
-        lines.append("<i>Годжо: «Ты пока не готов к этому. Прокачайся и возвращайся.»</i>")
+        lines.append("<i>Сначала прокачайся — иначе тебя ждёт только смерть.</i>")
         return "\n".join(lines)
 
-    lines.append(f"💬 <b>Годжо:</b> <i>«{chapter['intro']}»</i>")
+    lines.append(_format_intro_line(chapter))
     lines.append("")
     lines.append("<b>Задачи:</b>")
 
@@ -1607,7 +1658,7 @@ def format_story_screen(user_id: int) -> str:
 def format_intro(chapter: dict) -> str:
     return (
         f"📖 <b>Глава {chapter['num']}: {chapter['title']}</b>\n\n"
-        f"💬 <b>Годжо:</b> <i>«{chapter['intro']}»</i>\n\n"
+        f"{_format_intro_line(chapter)}\n\n"
         f"📋 Открой вкладку «📖 Сюжет», чтобы посмотреть задачи."
     )
 
@@ -1618,7 +1669,7 @@ def format_completion(chapter: dict, reward_gold: int, reward_exp: int,
         f"🏁 <b>Глава {chapter['num']} завершена!</b>",
         f"<i>{chapter['title']}</i>",
         "",
-        "💬 <b>Годжо:</b> «Неплохо. Держи, заслужил.»",
+        _completion_quote(chapter),
         "",
         f"💠 +{reward_gold} очков Ассоциации, 🧬 +{reward_exp} опыта",
     ]
@@ -1637,15 +1688,23 @@ def get_school_message(user_id: int) -> str | None:
     for i, step in enumerate(chapter["steps"]):
         prog = state["progress"].get(str(i), 0)
         if prog < step["goal"]:
+            sp = _chapter_speaker(chapter)
+            if sp["narrator"]:
+                return (
+                    f"📋 <b>Текущая задача:</b> {step['hint']} ({prog}/{step['goal']})"
+                )
             return (
-                f"💬 <b>Годжо:</b> <i>«{chapter['intro']}»</i>\n\n"
+                f"{sp['emoji']} <b>{sp['name']}:</b> <i>«{chapter['intro']}»</i>\n\n"
                 f"📋 <b>Текущая задача:</b> {step['hint']} ({prog}/{step['goal']})"
             )
     return None
 
 
 def get_current_npc(user_id: int) -> dict | None:
-    """Возвращает NPC текущей temp-локации, с которым нужно поговорить."""
+    """Возвращает NPC текущей temp-локации, с которым нужно поговорить.
+    Сравниваем по id И по отображаемому имени — target в шаге может быть любым.
+    Добавляет служебный ключ _step_target — точное значение step["target"],
+    чтобы talk_to_current_npc передал его же в add_progress."""
     chapter = get_current_chapter(user_id)
     if not chapter:
         return None
@@ -1662,9 +1721,10 @@ def get_current_npc(user_id: int) -> dict | None:
             continue
         if state["progress"].get(str(i), 0) >= step["goal"]:
             continue
+        tgt = step.get("target")
         for npc in npcs:
-            if npc.get("id") == step.get("target"):
-                return npc
+            if npc.get("id") == tgt or npc.get("name") == tgt:
+                return {**npc, "_step_target": tgt}
     return None
 
 
@@ -1674,7 +1734,9 @@ def talk_to_current_npc(user_id: int) -> dict:
     if not npc:
         return {"ok": False, "msg": "Здесь не с кем поговорить.", "npc": None}
 
-    done = add_progress(user_id, "talk", target=npc["id"], amount=1)
+    # Передаём именно step["target"], чтобы add_progress сматчил шаг
+    target = npc.get("_step_target") or npc.get("id")
+    done = add_progress(user_id, "talk", target=target, amount=1)
     msg = f"💬 <b>{npc['name']}:</b> <i>«{npc['line']}»</i>"
     if done:
         msg += "\n\n✅ <b>Задача выполнена!</b>"

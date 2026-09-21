@@ -73,7 +73,9 @@ MAX_CE_PER_LEVEL = 6
 PLAYER_BASE_DMG_MIN = 3
 PLAYER_BASE_DMG_MAX = 6
 PHYS_CE_COEF = 0.6
-TECH_CE_COEF = 0.05
+# ВАЖНО: было 0.05 — из-за этого игрок на высоком уровне ваншотил боссов.
+# Порезано до 0.035, чтобы кривая урона не улетала в космос.
+TECH_CE_COEF = 0.035
 DEFENSE_CE_COEF = 0.006
 DEFENSE_CAP = 0.65
 CE_REGEN_BASE = 2
@@ -97,6 +99,28 @@ DEATH_GOLD_LOSS = 0.25
 LEVEL_SCALE_PER_EXCESS = 0.03
 LEVEL_SCALE_CAP = 2.0
 LEVEL_SCALE_REWARD_COEF = 0.5
+
+# --- Баланс боссов: процентная защита от превышения уровня ---
+# Если игрок выше min_level главы на N уровней, броня босса растёт на
+# N * BOSS_DEFENSE_LEVEL_SCALE, до BOSS_DEFENSE_CAP.
+# Так максимально раскачанный игрок не ваншотит сюжетного босса,
+# но и не страдает сверх меры.
+BOSS_DEFENSE_LEVEL_SCALE = 0.004
+BOSS_DEFENSE_CAP = 0.75
+
+# --- Боевой клуб Хакари (босс-раш) ---
+# Открывается после прохождения N-й главы сюжета.
+BOSS_RUSH_UNLOCK_CHAPTER = 5
+# Цена входа в бой (💠).
+BOSS_RUSH_ENTRY_COST = 50
+# Кулдаун между боями в клубе (секунды).
+BOSS_RUSH_COOLDOWN = 120
+# Множители боссов боевого клуба относительно сюжетных:
+# HP ×2 (усилен), урон ×1.3, НО защита = 0 (можно ваншотнуть).
+BOSS_RUSH_HP_MULT = 2.0
+BOSS_RUSH_DMG_MULT = 1.3
+# Награда — 25% от сюжетной, чтобы не ломать экономику.
+BOSS_RUSH_REWARD_MULT = 0.25
 
 # --- Гача врождённых техник ---
 GACHA_ROLL_COST = 60
@@ -132,15 +156,12 @@ VIP_REWARD_MULT = 2.0
 VIP_PAYLOAD = "vip_30_days"
 
 # --- Расширения Территории ---
-# Сколько раз нужно использовать мастер-технику, чтобы разблокировать её домен.
 DOMAIN_UNLOCK_USES = 20
 
 # --- Донат (звёзды → 💠) ---
-DONATE_RATE = 3                     # базовый курс: сколько 💠 за 1 ⭐
-DONATE_PAYLOAD_PREFIX = "donate_"   # префикс платежа, чтобы отличать от VIP
+DONATE_RATE = 3
+DONATE_PAYLOAD_PREFIX = "donate_"
 
-# Пакеты с бонусами. currency — итоговое количество 💠 с учётом бонуса.
-# bonus_pct — для отображения игроку («+50% бонус»). base = stars * DONATE_RATE.
 DONATE_PACKAGES = {
     "small": {
         "emoji": "🥉", "name": "Малый",

@@ -7,20 +7,40 @@ story.py — сюжетные главы «Магической Битвы: То
 Каждая глава самодостаточна:
 - уникальный босс с пассивкой, скиллами и execute
 - уникальная головоломка
-- 3-4 задачи разных типов (kill / kill_boss / puzzle / have_item /
-  talk / find / reach)
+- 4-6 задач: kill (в т.ч. по классу), collect (принеси трофеи),
+  puzzle / have_item / talk / find / reach
 - шанс получить ритуальную печать в награду
 
+Типы шагов:
+    kill        — убить проклятие (target = класс ИЛИ id temp-локации)
+    kill_boss   — убить конкретного босса (target = имя босса)
+    puzzle      — решить головоломку (target = id головоломки)
+    find        — зайти в temp-локацию (target = temp_district["id"])
+    reach       — патрулировать в temp-локации N раз (target = temp id)
+    talk        — поговорить с NPC (target = id или name NPC)
+    have_item   — ИМЕТЬ предмет (списывается при завершении главы)
+    collect     — ИМЕТЬ N трофеев (НЕ списывается; для крафта/гринд)
+
 Боссы усилены:
-- HP +20% (кроме Хранителя Пальца — оставлен лёгким для новичков)
-- Урон повышен, минимальный урон подтянут почти до максимума
-- Броня (defense) 0.20–0.45, режет получаемый урон
+- HP +20% (кроме Хранителя Пальца)
+- Урон с 9-й главы минимум 100+, дальше круче — игра ДОЛЖНА
+  вынуждать игрока гриндить.
+- Броня (defense) 0.20–0.45 + уровневая динамическая надбавка
+  (см. combat.get_effective_boss_defense).
+- Пассивки/скиллы боссов гл. 7–20 порезаны, чтобы игрок оставался
+  с 15–25% HP после боя, а не умирал в 2 удара.
+
+Награды за главы — базовые значения из CHAPTERS, дополнительно
+умножаются на 0.85 (NERF — уже применён в самих значениях).
 
 Говорящий глав:
 - Главы 1–6: Годжо (он ещё не запечатан).
 - Глава 7, 8: Кусакабе (связной Ассоциации).
 - Глава 16: Мегуми.
 - Остальные главы 7+: Нарратор (авторский текст без кавычек).
+
+ВАЖНО: target у шагов "find" = ID временного района
+(temp_district["id"]), а не отображаемое имя.
 """
 import json
 import random
@@ -29,7 +49,9 @@ import database
 
 
 LEVEL_CAP_BASE = 20
-LEVEL_CAP_PER_CHAPTER = 20
+# ВАЖНО: было 20. Порезано до 10 — иначе игрок на капе главы
+# ваншотил следующего босса до того, как его защита успевала сработать.
+LEVEL_CAP_PER_CHAPTER = 10
 
 # С этой главы Годжо запечатан и не может говорить сам.
 GOJO_SEALED_FROM = 7
@@ -39,9 +61,6 @@ GOJO_SEALED_FROM = 7
 #  ГОВОРЯЩИЙ ГЛАВЫ
 # ============================================================
 def _chapter_speaker(chapter: dict) -> dict:
-    """Кто произносит интро главы.
-    Возвращает {"emoji", "name", "narrator"}.
-    narrator=True — текст читается как авторский, без «...» и без имени."""
     num = chapter.get("num", 1)
     if num < GOJO_SEALED_FROM:
         return {"emoji": "💬", "name": "Годжо", "narrator": False}
@@ -54,7 +73,6 @@ def _chapter_speaker(chapter: dict) -> dict:
 
 
 def _format_intro_line(chapter: dict) -> str:
-    """Одна строка с интро главы — с учётом говорящего."""
     sp = _chapter_speaker(chapter)
     if sp["narrator"]:
         return f"{sp['emoji']} <i>{chapter['intro']}</i>"
@@ -62,7 +80,6 @@ def _format_intro_line(chapter: dict) -> str:
 
 
 def _completion_quote(chapter: dict) -> str:
-    """Реплика в момент завершения главы — от того, кто «ведёт» эту главу."""
     sp = _chapter_speaker(chapter)
     if sp["name"] == "Годжо":
         return "💬 <b>Годжо:</b> <i>«Неплохо. Держи, заслужил.»</i>"
@@ -75,8 +92,11 @@ def _completion_quote(chapter: dict) -> str:
 
 # ============================================================
 #  БОССОВЫЕ СКИЛЛЫ И ПАССИВКИ
+#  Гл. 1–6 — как было (лёгкие по замыслу).
+#  Гл. 7–20 — порезано: chances ниже, mult ниже, dmg меньше.
 # ============================================================
 BOSS_SKILLS = {
+    # ---------- ГЛ. 1–6 (без изменений) ----------
     "Хранитель Пальца (Особый класс)": {
         "passive": {"type": "extra_dmg", "chance": 0.25, "name": "👁 Взгляд из тьмы", "dmg": 12},
         "skills": [{"name": "🕯️ Ритуал Тьмы", "chance": 0.20, "dmg_mult": 1.5}],
@@ -114,97 +134,99 @@ BOSS_SKILLS = {
         ],
         "execute": {"name": "💀 Идеальная форма", "hp_threshold": 0.32, "dmg_mult": 3.5},
     },
+
+    # ---------- ГЛ. 7–20 (порезано) ----------
     "Проклятие Развалин (Особый класс)": {
-        "passive": {"type": "extra_dmg", "chance": 0.30, "name": "🏚️ Обвал", "dmg": 30},
-        "skills": [{"name": "🧱 Каменный Вихрь", "chance": 0.25, "dmg_mult": 1.8}],
+        "passive": {"type": "extra_dmg", "chance": 0.20, "name": "🏚️ Обвал", "dmg": 25},
+        "skills": [{"name": "🧱 Каменный Вихрь", "chance": 0.20, "dmg_mult": 1.6}],
         "execute": {"name": "💀 Погребение", "hp_threshold": 0.30, "dmg_mult": 3.2},
     },
     "Хранитель Тюрьмы (Особый класс)": {
-        "passive": {"type": "drain_ce", "chance": 0.35, "name": "⛓️ Оковы", "amount": 15},
+        "passive": {"type": "drain_ce", "chance": 0.30, "name": "⛓️ Оковы", "amount": 12},
         "skills": [
-            {"name": "🔒 Засов Тюрьмы", "chance": 0.25, "dmg_mult": 1.8},
-            {"name": "🗝️ Ключ Смерти", "chance": 0.15, "dmg_mult": 2.4, "stun_player": True},
+            {"name": "🔒 Засов Тюрьмы", "chance": 0.20, "dmg_mult": 1.6},
+            {"name": "🗝️ Ключ Смерти", "chance": 0.10, "dmg_mult": 2.0, "stun_player": True},
         ],
-        "execute": {"name": "💀 Пожизненное", "hp_threshold": 0.32, "dmg_mult": 3.5},
+        "execute": {"name": "💀 Пожизненное", "hp_threshold": 0.32, "dmg_mult": 3.2},
     },
     "Первый Игрок (Особый класс)": {
-        "passive": {"type": "double_attack", "chance": 0.30},
-        "skills": [{"name": "🎯 Меткий Удар", "chance": 0.30, "dmg_mult": 1.9}],
-        "execute": {"name": "💀 Казнь", "hp_threshold": 0.33, "dmg_mult": 3.6},
+        "passive": {"type": "double_attack", "chance": 0.25},
+        "skills": [{"name": "🎯 Меткий Удар", "chance": 0.25, "dmg_mult": 1.6}],
+        "execute": {"name": "💀 Казнь", "hp_threshold": 0.33, "dmg_mult": 3.4},
     },
     "Игрок-Убийца (Особый класс)": {
-        "passive": {"type": "bleed", "chance": 0.40, "name": "🩸 Порез", "dmg": 40},
+        "passive": {"type": "bleed", "chance": 0.30, "name": "🩸 Порез", "dmg": 30},
         "skills": [
-            {"name": "🗡️ Двойной Удар", "chance": 0.30, "dmg_mult": 2.0},
-            {"name": "💥 Взрывное Клеймо", "chance": 0.20, "dmg_mult": 2.5, "stun_player": True},
+            {"name": "🗡️ Двойной Удар", "chance": 0.25, "dmg_mult": 1.7},
+            {"name": "💥 Взрывное Клеймо", "chance": 0.15, "dmg_mult": 2.0, "stun_player": True},
         ],
-        "execute": {"name": "💀 Финальный Порез", "hp_threshold": 0.35, "dmg_mult": 3.8},
+        "execute": {"name": "💀 Финальный Порез", "hp_threshold": 0.35, "dmg_mult": 3.6},
     },
     "Судья Колонии (Особый класс)": {
-        "passive": {"type": "rage", "chance": 0.35},
-        "skills": [{"name": "⚖️ Приговор", "chance": 0.30, "dmg_mult": 2.1}],
-        "execute": {"name": "💀 Высшая Мера", "hp_threshold": 0.35, "dmg_mult": 4.0},
+        "passive": {"type": "rage", "chance": 0.30},
+        "skills": [{"name": "⚖️ Приговор", "chance": 0.25, "dmg_mult": 1.8}],
+        "execute": {"name": "💀 Высшая Мера", "hp_threshold": 0.35, "dmg_mult": 3.8},
     },
     "Близнецы-Игроки (Особый класс)": {
-        "passive": {"type": "double_attack", "chance": 0.40},
-        "skills": [{"name": "👥 Синхронный Удар", "chance": 0.30, "dmg_mult": 2.2}],
-        "execute": {"name": "💀 Двойная Расплата", "hp_threshold": 0.35, "dmg_mult": 4.0},
+        "passive": {"type": "double_attack", "chance": 0.35},
+        "skills": [{"name": "👥 Синхронный Удар", "chance": 0.25, "dmg_mult": 1.9}],
+        "execute": {"name": "💀 Двойная Расплата", "hp_threshold": 0.35, "dmg_mult": 3.8},
     },
     "Одержимый Игрок (Особый класс)": {
-        "passive": {"type": "drain_ce", "chance": 0.40, "name": "🌀 Проклятая Воронка", "amount": 20},
-        "skills": [{"name": "👁️ Взгляд Бездны", "chance": 0.30, "dmg_mult": 2.2}],
-        "execute": {"name": "💀 Поглощение", "hp_threshold": 0.36, "dmg_mult": 4.2},
+        "passive": {"type": "drain_ce", "chance": 0.35, "name": "🌀 Проклятая Воронка", "amount": 15},
+        "skills": [{"name": "👁️ Взгляд Бездны", "chance": 0.25, "dmg_mult": 1.9}],
+        "execute": {"name": "💀 Поглощение", "hp_threshold": 0.36, "dmg_mult": 4.0},
     },
     "Страж Ворот (Особый класс)": {
-        "passive": {"type": "extra_dmg", "chance": 0.35, "name": "🚪 Врата", "dmg": 50},
-        "skills": [{"name": "🔨 Сокрушение", "chance": 0.30, "dmg_mult": 2.3}],
-        "execute": {"name": "💀 Закрытие Врат", "hp_threshold": 0.36, "dmg_mult": 4.2},
+        "passive": {"type": "extra_dmg", "chance": 0.30, "name": "🚪 Врата", "dmg": 40},
+        "skills": [{"name": "🔨 Сокрушение", "chance": 0.25, "dmg_mult": 2.0}],
+        "execute": {"name": "💀 Закрытие Врат", "hp_threshold": 0.36, "dmg_mult": 4.0},
     },
     "Мастер Клинка (Особый класс)": {
-        "passive": {"type": "bleed", "chance": 0.45, "name": "⚔️ Рассечение", "dmg": 60},
+        "passive": {"type": "bleed", "chance": 0.35, "name": "⚔️ Рассечение", "dmg": 45},
         "skills": [
-            {"name": "🌪️ Вихрь Клинков", "chance": 0.30, "dmg_mult": 2.4},
-            {"name": "⚡ Мгновенный Разрез", "chance": 0.20, "dmg_mult": 3.0, "stun_player": True},
+            {"name": "🌪️ Вихрь Клинков", "chance": 0.25, "dmg_mult": 2.0},
+            {"name": "⚡ Мгновенный Разрез", "chance": 0.15, "dmg_mult": 2.5, "stun_player": True},
         ],
-        "execute": {"name": "💀 Смертельный Разрез", "hp_threshold": 0.37, "dmg_mult": 4.4},
+        "execute": {"name": "💀 Смертельный Разрез", "hp_threshold": 0.37, "dmg_mult": 4.2},
     },
     "Прислужник Реджи (Особый класс)": {
-        "passive": {"type": "double_attack", "chance": 0.45},
-        "skills": [{"name": "📜 Карающий Удар", "chance": 0.30, "dmg_mult": 2.5}],
-        "execute": {"name": "💀 Возмездие", "hp_threshold": 0.37, "dmg_mult": 4.4},
+        "passive": {"type": "double_attack", "chance": 0.35},
+        "skills": [{"name": "📜 Карающий Удар", "chance": 0.25, "dmg_mult": 2.1}],
+        "execute": {"name": "💀 Возмездие", "hp_threshold": 0.37, "dmg_mult": 4.2},
     },
     "Информатор (Особый класс)": {
-        "passive": {"type": "drain_ce", "chance": 0.45, "name": "📡 Волна", "amount": 25},
-        "skills": [{"name": "🗣️ Шёпот", "chance": 0.35, "dmg_mult": 2.5, "stun_player": True}],
-        "execute": {"name": "💀 Слив", "hp_threshold": 0.38, "dmg_mult": 4.6},
+        "passive": {"type": "drain_ce", "chance": 0.35, "name": "📡 Волна", "amount": 20},
+        "skills": [{"name": "🗣️ Шёпот", "chance": 0.30, "dmg_mult": 2.1, "stun_player": True}],
+        "execute": {"name": "💀 Слив", "hp_threshold": 0.38, "dmg_mult": 4.4},
     },
     "Громила Реджи (Особый класс)": {
-        "passive": {"type": "extra_dmg", "chance": 0.40, "name": "🔨 Громила", "dmg": 70},
-        "skills": [{"name": "💥 Удар Кулаком", "chance": 0.35, "dmg_mult": 2.6}],
-        "execute": {"name": "💀 Раздавливание", "hp_threshold": 0.38, "dmg_mult": 4.6},
+        "passive": {"type": "extra_dmg", "chance": 0.35, "name": "🔨 Громила", "dmg": 55},
+        "skills": [{"name": "💥 Удар Кулаком", "chance": 0.30, "dmg_mult": 2.2}],
+        "execute": {"name": "💀 Раздавливание", "hp_threshold": 0.38, "dmg_mult": 4.4},
     },
     "Реджи Стар (Особый класс)": {
-        "passive": {"type": "rage", "chance": 0.40},
+        "passive": {"type": "rage", "chance": 0.35},
         "skills": [
-            {"name": "💳 Кредитный Удар", "chance": 0.30, "dmg_mult": 2.7},
-            {"name": "💰 Долговая Расплата", "chance": 0.20, "dmg_mult": 3.2, "stun_player": True},
+            {"name": "💳 Кредитный Удар", "chance": 0.25, "dmg_mult": 2.3},
+            {"name": "💰 Долговая Расплата", "chance": 0.15, "dmg_mult": 2.7, "stun_player": True},
         ],
-        "execute": {"name": "💀 Погашение Долга", "hp_threshold": 0.38, "dmg_mult": 4.8},
+        "execute": {"name": "💀 Погашение Долга", "hp_threshold": 0.38, "dmg_mult": 4.6},
     },
     "Реджи Стар — Финальная Форма (Особый класс)": {
-        "passive": {"type": "rage", "chance": 0.50},
+        "passive": {"type": "rage", "chance": 0.40},
         "skills": [
-            {"name": "🔥 Всеобщий Долг", "chance": 0.35, "dmg_mult": 3.0},
-            {"name": "💀 Расплата Кровью", "chance": 0.25, "dmg_mult": 3.5, "stun_player": True},
-            {"name": "⚡ Договор Разорван", "chance": 0.15, "dmg_mult": 4.0},
+            {"name": "🔥 Всеобщий Долг", "chance": 0.30, "dmg_mult": 2.6},
+            {"name": "💀 Расплата Кровью", "chance": 0.20, "dmg_mult": 3.0, "stun_player": True},
+            {"name": "⚡ Договор Разорван", "chance": 0.10, "dmg_mult": 3.5},
         ],
-        "execute": {"name": "💀 Абсолютный Долг", "hp_threshold": 0.40, "dmg_mult": 5.0},
+        "execute": {"name": "💀 Абсолютный Долг", "hp_threshold": 0.40, "dmg_mult": 4.8},
     },
 }
 
 
 # ============================================================
-#  ГЛАВЫ (20)
+#  ГЛАВЫ (20) — награды урезаны на 15%
 # ============================================================
 CHAPTERS = [
     {
@@ -220,8 +242,8 @@ CHAPTERS = [
             {"type": "kill", "target": "4-й класс", "goal": 3,
              "hint": "Изгони 3 проклятия 4-го класса в любом районе"},
         ],
-        "reward_gold": 200,
-        "reward_exp": 150,
+        "reward_gold": 170,
+        "reward_exp": 128,
     },
     {
         "id": "finger_hunt",
@@ -233,21 +255,25 @@ CHAPTERS = [
             "Чувствую там один из пальцев Сукуны. Сходи, разберись, принеси мне."
         ),
         "steps": [
-            {"type": "find", "target": "Заброшенная школа", "goal": 1,
+            {"type": "find", "target": "abandoned_school", "goal": 1,
              "hint": "📍 Найди вход в Заброшенную школу (Сюжет → Отправиться)"},
             {"type": "talk", "target": "Годжо", "goal": 1,
-             "hint": "💬 Поговори с Годжо внутри локации (кнопка «Поговорить»)"},
+             "hint": "💬 Поговори с Годжо внутри локации"},
             {"type": "kill", "target": "abandoned_school", "goal": 4,
              "hint": "Изгони 4 проклятия в Заброшенной школе"},
+            {"type": "kill", "target": "3-й класс", "goal": 2,
+             "hint": "Изгони 2 проклятия 3-го класса"},
+            {"type": "collect", "target": "Порванный Журнал", "goal": 3,
+             "hint": "📦 Принеси 3× Порванный Журнал (дроп с Тени Учителя)"},
             {"type": "puzzle", "target": "gojo_cipher", "goal": 1,
              "hint": "🧩 Разгадай шифр Цезаря из блокнота"},
             {"type": "kill_boss", "target": "Хранитель Пальца (Особый класс)", "goal": 1,
              "hint": "Победи Хранителя Пальца"},
             {"type": "have_item", "target": "Палец Сукуны", "goal": 1,
-             "hint": "Забери Палец Сукуны"},
+             "hint": "Забери Палец Сукуны (списывается)"},
         ],
-        "reward_gold": 500,
-        "reward_exp": 400,
+        "reward_gold": 425,
+        "reward_exp": 340,
         "temp_district": {
             "id": "abandoned_school",
             "name": "Заброшенная школа",
@@ -279,19 +305,23 @@ CHAPTERS = [
             "Ещё один палец Сукуны. Иди и проверь, но не задерживайся до темноты."
         ),
         "steps": [
-            {"type": "find", "target": "Заброшенная больница", "goal": 1,
+            {"type": "find", "target": "abandoned_hospital", "goal": 1,
              "hint": "📍 Найди вход в Заброшенную больницу"},
             {"type": "kill", "target": "abandoned_hospital", "goal": 4,
              "hint": "Изгони 4 проклятия в больнице"},
+            {"type": "kill", "target": "2-й класс", "goal": 3,
+             "hint": "Изгони 3 проклятия 2-го класса"},
+            {"type": "collect", "target": "Шприц с Тёмной Жидкостью", "goal": 3,
+             "hint": "📦 Принеси 3× Шприц с Тёмной Жидкостью"},
             {"type": "puzzle", "target": "hospital_code", "goal": 1,
              "hint": "🧩 Разгадай код от двери морга"},
             {"type": "kill_boss", "target": "Медсестра-Смерть (Особый класс)", "goal": 1,
              "hint": "Победи Медсестру-Смерть"},
             {"type": "have_item", "target": "Палец Сукуны", "goal": 1,
-             "hint": "Забери Палец Сукуны"},
+             "hint": "Забери Палец Сукуны (списывается)"},
         ],
-        "reward_gold": 700,
-        "reward_exp": 550,
+        "reward_gold": 595,
+        "reward_exp": 468,
         "temp_district": {
             "id": "abandoned_hospital",
             "name": "Заброшенная больница",
@@ -324,16 +354,20 @@ CHAPTERS = [
         ),
         "steps": [
             {"type": "reach", "target": "flooded_subway", "goal": 3,
-             "hint": "🚶 Проберись вглубь станции (3 патруля в Затопленном метро)"},
+             "hint": "🚶 Проберись вглубь станции (3 патруля)"},
+            {"type": "kill", "target": "3-й класс", "goal": 3,
+             "hint": "Изгони 3 проклятия 3-го класса"},
+            {"type": "collect", "target": "Ржавый Ключ", "goal": 3,
+             "hint": "📦 Принеси 3× Ржавый Ключ"},
             {"type": "puzzle", "target": "subway_graffiti", "goal": 1,
              "hint": "🧩 Расшифруй граффити на стене вагона"},
             {"type": "kill_boss", "target": "Пожиратель Тоннелей (Особый класс)", "goal": 1,
              "hint": "Победи Пожирателя Тоннелей"},
             {"type": "have_item", "target": "Палец Сукуны", "goal": 1,
-             "hint": "Забери Палец Сукуны"},
+             "hint": "Забери Палец Сукуны (списывается)"},
         ],
-        "reward_gold": 900,
-        "reward_exp": 700,
+        "reward_gold": 765,
+        "reward_exp": 595,
         "temp_district": {
             "id": "flooded_subway",
             "name": "Затопленное метро",
@@ -365,15 +399,19 @@ CHAPTERS = [
         "steps": [
             {"type": "kill", "target": "cursed_arena", "goal": 5,
              "hint": "Изгони 5 проклятий на Проклятой арене"},
+            {"type": "kill", "target": "1-й класс", "goal": 2,
+             "hint": "Изгони 2 проклятия 1-го класса"},
+            {"type": "collect", "target": "Плоть Проклятия", "goal": 3,
+             "hint": "📦 Принеси 3× Плоть Проклятия"},
             {"type": "puzzle", "target": "seal_sequence", "goal": 1,
              "hint": "🧩 Зажги печати барьера в правильном порядке"},
             {"type": "kill_boss", "target": "Сукуна (3 пальца) (Особый класс)", "goal": 1,
              "hint": "Победи пробудившегося Сукуну"},
             {"type": "have_item", "target": "Метка Сукуны", "goal": 1,
-             "hint": "Забери Метку Сукуны"},
+             "hint": "Забери Метку Сукуны (списывается)"},
         ],
-        "reward_gold": 1500,
-        "reward_exp": 1200,
+        "reward_gold": 1275,
+        "reward_exp": 1020,
         "temp_district": {
             "id": "cursed_arena",
             "name": "Проклятая арена",
@@ -403,19 +441,23 @@ CHAPTERS = [
             "Внутри действует существо, меняющее тела. Выживи."
         ),
         "steps": [
-            {"type": "find", "target": "Барьер Сибуи", "goal": 1,
+            {"type": "find", "target": "shibuya_barrier", "goal": 1,
              "hint": "📍 Найди вход в Барьер Сибуи"},
             {"type": "kill", "target": "shibuya_barrier", "goal": 5,
              "hint": "Изгони 5 трансформированных"},
+            {"type": "kill", "target": "2-й класс", "goal": 3,
+             "hint": "Изгони 3 проклятия 2-го класса"},
+            {"type": "collect", "target": "Сгусток Души", "goal": 3,
+             "hint": "📦 Принеси 3× Сгусток Души"},
             {"type": "puzzle", "target": "infinity_riddle", "goal": 1,
              "hint": "🧩 Отгадай загадку Годжо"},
             {"type": "kill_boss", "target": "Махито (Особый класс)", "goal": 1,
              "hint": "Победи Махито"},
             {"type": "have_item", "target": "Душа Проклятия", "goal": 1,
-             "hint": "Забери Душу Проклятия"},
+             "hint": "Забери Душу Проклятия (списывается)"},
         ],
-        "reward_gold": 2500,
-        "reward_exp": 2000,
+        "reward_gold": 2125,
+        "reward_exp": 1700,
         "temp_district": {
             "id": "shibuya_barrier",
             "name": "Барьер Сибуи",
@@ -441,23 +483,27 @@ CHAPTERS = [
         "title": "После Сибуи",
         "min_level": 18,
         "intro": (
-            "Связь с Годжо потеряна — он запечатан. Старшие маги выведены "
+            "Связь с Годжо потеряна — его запечатали. Старшие маги выведены "
             "из строя. Яга-сэнсэй собирает уцелевших — найди её и получи задание."
         ),
         "steps": [
-            {"type": "find", "target": "Руины Сибуи", "goal": 1,
+            {"type": "find", "target": "shibuya_ruins", "goal": 1,
              "hint": "📍 Найди Руины Сибуи на карте"},
             {"type": "talk", "target": "Яга", "goal": 1,
              "hint": "💬 Поговори с Ягой-сэнсэй в локации"},
             {"type": "kill", "target": "shibuya_ruins", "goal": 4,
              "hint": "Изгони 4 проклятия в Руинах Сибуи"},
+            {"type": "kill", "target": "2-й класс", "goal": 3,
+             "hint": "Изгони 3 проклятия 2-го класса"},
+            {"type": "collect", "target": "Обломок Бетона", "goal": 5,
+             "hint": "📦 Принеси 5× Обломок Бетона (дроп с Пепельного Духа)"},
             {"type": "kill_boss", "target": "Проклятие Развалин (Особый класс)", "goal": 1,
              "hint": "Победи Проклятие Развалин"},
             {"type": "have_item", "target": "Печать Развалин", "goal": 1,
              "hint": "Забери Печать Развалин"},
         ],
-        "reward_gold": 3500,
-        "reward_exp": 2800,
+        "reward_gold": 2975,
+        "reward_exp": 2380,
         "temp_district": {
             "id": "shibuya_ruins",
             "name": "Руины Сибуи",
@@ -473,7 +519,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Проклятие Развалин (Особый класс)",
-                "hp": 2200, "dmg_min": 60, "dmg_max": 75, "defense": 0.35,
+                "hp": 2200, "dmg_min": 70, "dmg_max": 90, "defense": 0.35,
                 "emoji": "🏚️", "reward_gold": 1500, "reward_exp": 1200,
                 "drop_item": ("Печать Развалин", "легендарный", 1),
             },
@@ -491,8 +537,12 @@ CHAPTERS = [
         "steps": [
             {"type": "kill", "target": "1-й класс", "goal": 5,
              "hint": "Изгони 5 проклятий 1-го класса в любом районе"},
-            {"type": "find", "target": "Старая Тюрьма", "goal": 1,
+            {"type": "find", "target": "old_prison", "goal": 1,
              "hint": "📍 Найди вход в Старую Тюрьму"},
+            {"type": "kill", "target": "old_prison", "goal": 3,
+             "hint": "Изгони 3 проклятия в Старой Тюрьме"},
+            {"type": "collect", "target": "Клеймо Палача", "goal": 3,
+             "hint": "📦 Принеси 3× Клеймо Палача (дроп с Беглого Карателя)"},
             {"type": "puzzle", "target": "prison_code", "goal": 1,
              "hint": "🧩 Разгадай код сейфа тюрьмы"},
             {"type": "kill_boss", "target": "Хранитель Тюрьмы (Особый класс)", "goal": 1,
@@ -500,8 +550,8 @@ CHAPTERS = [
             {"type": "have_item", "target": "Печать Тюрьмы", "goal": 1,
              "hint": "Забери Печать Тюрьмы"},
         ],
-        "reward_gold": 4500,
-        "reward_exp": 3600,
+        "reward_gold": 3825,
+        "reward_exp": 3060,
         "temp_district": {
             "id": "old_prison",
             "name": "Старая Тюрьма",
@@ -515,7 +565,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Хранитель Тюрьмы (Особый класс)",
-                "hp": 2500, "dmg_min": 65, "dmg_max": 82, "defense": 0.35,
+                "hp": 2500, "dmg_min": 85, "dmg_max": 105, "defense": 0.35,
                 "emoji": "⛓️", "reward_gold": 1800, "reward_exp": 1400,
                 "drop_item": ("Печать Тюрьмы", "легендарный", 1),
             },
@@ -531,19 +581,23 @@ CHAPTERS = [
             "правила просты: выживает сильнейший. Пора входить."
         ),
         "steps": [
-            {"type": "find", "target": "Колония Токио №1", "goal": 1,
+            {"type": "find", "target": "colony_tokyo1", "goal": 1,
              "hint": "📍 Найди вход в Колонию Токио №1"},
             {"type": "puzzle", "target": "colony_rules", "goal": 1,
              "hint": "🧩 Активируй печати барьера в правильном порядке"},
+            {"type": "kill", "target": "3-й класс", "goal": 5,
+             "hint": "Изгони 5 проклятий 3-го класса"},
             {"type": "reach", "target": "colony_tokyo1", "goal": 2,
              "hint": "🚶 Пройди 2 патруля в колонии"},
+            {"type": "collect", "target": "Кубик Судьбы", "goal": 5,
+             "hint": "📦 Принеси 5× Кубик Судьбы"},
             {"type": "kill_boss", "target": "Первый Игрок (Особый класс)", "goal": 1,
              "hint": "Победи Первого Игрока"},
             {"type": "have_item", "target": "Печать Игрока", "goal": 1,
              "hint": "Забери Печать Игрока"},
         ],
-        "reward_gold": 5500,
-        "reward_exp": 4500,
+        "reward_gold": 4675,
+        "reward_exp": 3825,
         "temp_district": {
             "id": "colony_tokyo1",
             "name": "Колония Токио №1",
@@ -557,7 +611,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Первый Игрок (Особый класс)",
-                "hp": 2800, "dmg_min": 70, "dmg_max": 88, "defense": 0.36,
+                "hp": 3200, "dmg_min": 105, "dmg_max": 135, "defense": 0.36,
                 "emoji": "🥇", "reward_gold": 2200, "reward_exp": 1800,
                 "drop_item": ("Печать Игрока", "легендарный", 1),
             },
@@ -575,17 +629,21 @@ CHAPTERS = [
         "steps": [
             {"type": "kill", "target": "colony_tokyo1", "goal": 5,
              "hint": "Изгони 5 игроков в колонии"},
+            {"type": "kill", "target": "1-й класс", "goal": 3,
+             "hint": "Изгони 3 проклятия 1-го класса"},
             {"type": "puzzle", "target": "colony_graffiti", "goal": 1,
              "hint": "🧩 Расшифруй граффити на стене"},
             {"type": "talk", "target": "Мегуми", "goal": 1,
-             "hint": "💬 Поговори с Мегуми (кнопка «Поговорить»)"},
+             "hint": "💬 Поговори с Мегуми"},
+            {"type": "collect", "target": "Сломанная Фишка", "goal": 5,
+             "hint": "📦 Принеси 5× Сломанная Фишка"},
             {"type": "kill_boss", "target": "Игрок-Убийца (Особый класс)", "goal": 1,
              "hint": "Победи Игрока-Убийцу"},
             {"type": "have_item", "target": "Метка Колонии", "goal": 1,
              "hint": "Забери Метку Колонии"},
         ],
-        "reward_gold": 6500,
-        "reward_exp": 5200,
+        "reward_gold": 5525,
+        "reward_exp": 4420,
         "temp_district": {
             "id": "colony_tokyo1",
             "name": "Колония Токио №1 — День 1",
@@ -601,7 +659,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Игрок-Убийца (Особый класс)",
-                "hp": 3100, "dmg_min": 75, "dmg_max": 95, "defense": 0.37,
+                "hp": 3600, "dmg_min": 115, "dmg_max": 150, "defense": 0.37,
                 "emoji": "🗡️", "reward_gold": 2600, "reward_exp": 2100,
                 "drop_item": ("Метка Колонии", "легендарный", 1),
             },
@@ -617,19 +675,23 @@ CHAPTERS = [
             "Ты на 12. Судья Колонии уже ждёт первых нарушителей."
         ),
         "steps": [
-            {"type": "find", "target": "Трибунал Колонии", "goal": 1,
+            {"type": "find", "target": "colony_tribunal", "goal": 1,
              "hint": "📍 Найди Трибунал Колонии"},
+            {"type": "kill", "target": "2-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 2-го класса"},
             {"type": "puzzle", "target": "colony_riddle", "goal": 1,
              "hint": "🧩 Разгадай загадку Судьи"},
             {"type": "kill", "target": "colony_tribunal", "goal": 4,
              "hint": "Изгони 4 игроков у Трибунала"},
+            {"type": "collect", "target": "Печать Закона", "goal": 3,
+             "hint": "📦 Принеси 3× Печать Закона (дроп с Голоса Закона)"},
             {"type": "kill_boss", "target": "Судья Колонии (Особый класс)", "goal": 1,
              "hint": "Победи Судью Колонии"},
             {"type": "have_item", "target": "Печать Судьи", "goal": 1,
              "hint": "Забери Печать Судьи"},
         ],
-        "reward_gold": 7500,
-        "reward_exp": 6000,
+        "reward_gold": 6375,
+        "reward_exp": 5100,
         "temp_district": {
             "id": "colony_tribunal",
             "name": "Трибунал Колонии",
@@ -643,7 +705,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Судья Колонии (Особый класс)",
-                "hp": 3400, "dmg_min": 80, "dmg_max": 100, "defense": 0.38,
+                "hp": 3900, "dmg_min": 125, "dmg_max": 160, "defense": 0.38,
                 "emoji": "⚖️", "reward_gold": 3000, "reward_exp": 2400,
                 "drop_item": ("Печать Судьи", "легендарный", 1),
             },
@@ -661,15 +723,19 @@ CHAPTERS = [
         "steps": [
             {"type": "reach", "target": "alley_massacre", "goal": 2,
              "hint": "🚶 Пройди 2 патруля в переулке"},
+            {"type": "kill", "target": "3-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 3-го класса"},
             {"type": "puzzle", "target": "alley_cipher", "goal": 1,
              "hint": "🧩 Расшифруй послание близнецов"},
+            {"type": "collect", "target": "Обрывок Плаща", "goal": 5,
+             "hint": "📦 Принеси 5× Обрывок Плаща"},
             {"type": "kill_boss", "target": "Близнецы-Игроки (Особый класс)", "goal": 1,
              "hint": "Победи Близнецов-Игроков"},
             {"type": "have_item", "target": "Парный Клинок", "goal": 1,
              "hint": "Забери Парный Клинок"},
         ],
-        "reward_gold": 8500,
-        "reward_exp": 6800,
+        "reward_gold": 7225,
+        "reward_exp": 5780,
         "temp_district": {
             "id": "alley_massacre",
             "name": "Переулок Резни",
@@ -683,7 +749,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Близнецы-Игроки (Особый класс)",
-                "hp": 3700, "dmg_min": 88, "dmg_max": 110, "defense": 0.38,
+                "hp": 4200, "dmg_min": 135, "dmg_max": 175, "defense": 0.38,
                 "emoji": "👥", "reward_gold": 3400, "reward_exp": 2700,
                 "drop_item": ("Парный Клинок", "легендарный", 1),
             },
@@ -699,19 +765,23 @@ CHAPTERS = [
             "Хана доверчива, а вот Юдзи настороже."
         ),
         "steps": [
-            {"type": "find", "target": "Лагерь Юдзи", "goal": 1,
+            {"type": "find", "target": "camp_yuji", "goal": 1,
              "hint": "📍 Найди Лагерь Юдзи"},
             {"type": "talk", "target": "Юдзи", "goal": 1,
              "hint": "💬 Поговори с Юдзи"},
+            {"type": "kill", "target": "3-й класс", "goal": 5,
+             "hint": "Изгони 5 проклятий 3-го класса"},
             {"type": "puzzle", "target": "yuji_riddle", "goal": 1,
              "hint": "🧩 Отгадай загадку про технику Юдзи"},
+            {"type": "collect", "target": "Осколок Тени", "goal": 5,
+             "hint": "📦 Принеси 5× Осколок Тени"},
             {"type": "kill_boss", "target": "Одержимый Игрок (Особый класс)", "goal": 1,
              "hint": "Победи Одержимого Игрока"},
             {"type": "have_item", "target": "Печать Одного Тела", "goal": 1,
              "hint": "Забери Печать Одного Тела"},
         ],
-        "reward_gold": 9500,
-        "reward_exp": 7600,
+        "reward_gold": 8075,
+        "reward_exp": 6460,
         "temp_district": {
             "id": "camp_yuji",
             "name": "Лагерь Юдзи",
@@ -731,7 +801,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Одержимый Игрок (Особый класс)",
-                "hp": 4000, "dmg_min": 92, "dmg_max": 118, "defense": 0.39,
+                "hp": 4500, "dmg_min": 145, "dmg_max": 185, "defense": 0.39,
                 "emoji": "👁️", "reward_gold": 3800, "reward_exp": 3000,
                 "drop_item": ("Печать Одного Тела", "легендарный", 1),
             },
@@ -747,19 +817,23 @@ CHAPTERS = [
             "и выпустить людей из колонии. Пора."
         ),
         "steps": [
-            {"type": "find", "target": "Врата Колонии", "goal": 1,
+            {"type": "find", "target": "colony_gate", "goal": 1,
              "hint": "📍 Найди Врата Колонии"},
+            {"type": "kill", "target": "2-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 2-го класса"},
             {"type": "puzzle", "target": "exit_code", "goal": 1,
              "hint": "🧩 Разгадай код замка врат"},
             {"type": "kill", "target": "colony_gate", "goal": 5,
              "hint": "Изгони 5 стражей у врат"},
+            {"type": "collect", "target": "Осколок Печати", "goal": 5,
+             "hint": "📦 Принеси 5× Осколок Печати"},
             {"type": "kill_boss", "target": "Страж Ворот (Особый класс)", "goal": 1,
              "hint": "Победи Стража Ворот"},
             {"type": "have_item", "target": "Ключ Врат", "goal": 1,
              "hint": "Забери Ключ Врат"},
         ],
-        "reward_gold": 10500,
-        "reward_exp": 8400,
+        "reward_gold": 8925,
+        "reward_exp": 7140,
         "temp_district": {
             "id": "colony_gate",
             "name": "Врата Колонии",
@@ -773,7 +847,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Страж Ворот (Особый класс)",
-                "hp": 4300, "dmg_min": 96, "dmg_max": 124, "defense": 0.40,
+                "hp": 4800, "dmg_min": 155, "dmg_max": 200, "defense": 0.40,
                 "emoji": "🚪", "reward_gold": 4200, "reward_exp": 3400,
                 "drop_item": ("Ключ Врат", "легендарный", 1),
             },
@@ -791,15 +865,19 @@ CHAPTERS = [
         "steps": [
             {"type": "reach", "target": "strong_players", "goal": 3,
              "hint": "🚶 Пройди 3 патруля, чтобы выманить Мастера Клинка"},
+            {"type": "kill", "target": "2-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 2-го класса"},
             {"type": "puzzle", "target": "strong_graffiti", "goal": 1,
              "hint": "🧩 Расшифруй граффити на стене арены"},
+            {"type": "collect", "target": "Сломанная Гарда", "goal": 5,
+             "hint": "📦 Принеси 5× Сломанная Гарда"},
             {"type": "kill_boss", "target": "Мастер Клинка (Особый класс)", "goal": 1,
              "hint": "Победи Мастера Клинка"},
             {"type": "have_item", "target": "Клинок Игрока", "goal": 1,
              "hint": "Забери Клинок Игрока"},
         ],
-        "reward_gold": 12000,
-        "reward_exp": 9600,
+        "reward_gold": 10200,
+        "reward_exp": 8160,
         "temp_district": {
             "id": "strong_players",
             "name": "Арена Сильных",
@@ -813,7 +891,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Мастер Клинка (Особый класс)",
-                "hp": 4600, "dmg_min": 102, "dmg_max": 130, "defense": 0.40,
+                "hp": 5100, "dmg_min": 165, "dmg_max": 215, "defense": 0.40,
                 "emoji": "⚔️", "reward_gold": 4600, "reward_exp": 3700,
                 "drop_item": ("Клинок Игрока", "легендарный", 1),
             },
@@ -829,21 +907,25 @@ CHAPTERS = [
             "чем я думал. Если можешь — прорывайся. Немедленно."
         ),
         "steps": [
-            {"type": "find", "target": "Точка Мегуми", "goal": 1,
+            {"type": "find", "target": "megumi_point", "goal": 1,
              "hint": "📍 Беги к Точке Мегуми"},
             {"type": "talk", "target": "Мегуми", "goal": 1,
              "hint": "💬 Поговори с Мегуми"},
             {"type": "kill", "target": "megumi_point", "goal": 4,
              "hint": "Расчисти 4 проклятия рядом с Мегуми"},
+            {"type": "kill", "target": "2-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 2-го класса"},
             {"type": "puzzle", "target": "megumi_sequence", "goal": 1,
              "hint": "🧩 Активируй тени Мегуми в порядке силы"},
+            {"type": "collect", "target": "Обрывок Мрака", "goal": 5,
+             "hint": "📦 Принеси 5× Обрывок Мрака"},
             {"type": "kill_boss", "target": "Прислужник Реджи (Особый класс)", "goal": 1,
              "hint": "Победи Прислужника Реджи"},
             {"type": "have_item", "target": "Тёмный Клинок", "goal": 1,
              "hint": "Забери Тёмный Клинок"},
         ],
-        "reward_gold": 13500,
-        "reward_exp": 10800,
+        "reward_gold": 11475,
+        "reward_exp": 9180,
         "temp_district": {
             "id": "megumi_point",
             "name": "Точка Мегуми",
@@ -859,7 +941,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Прислужник Реджи (Особый класс)",
-                "hp": 5000, "dmg_min": 108, "dmg_max": 138, "defense": 0.41,
+                "hp": 5500, "dmg_min": 180, "dmg_max": 230, "defense": 0.41,
                 "emoji": "🌑", "reward_gold": 5000, "reward_exp": 4000,
                 "drop_item": ("Тёмный Клинок", "легендарный", 1),
             },
@@ -875,19 +957,23 @@ CHAPTERS = [
             "Найди Информатора и выбей из него данные, пока Реджи не нашёл тебя первым."
         ),
         "steps": [
-            {"type": "find", "target": "Убежище Информатора", "goal": 1,
+            {"type": "find", "target": "info_hideout", "goal": 1,
              "hint": "📍 Найди Убежище Информатора"},
+            {"type": "kill", "target": "3-й класс", "goal": 5,
+             "hint": "Изгони 5 проклятий 3-го класса"},
             {"type": "puzzle", "target": "prep_cipher", "goal": 1,
              "hint": "🧩 Расшифруй шифр информатора"},
             {"type": "kill", "target": "info_hideout", "goal": 5,
              "hint": "Изгони 5 охранников Информатора"},
+            {"type": "collect", "target": "Обрывок Провода", "goal": 5,
+             "hint": "📦 Принеси 5× Обрывок Провода"},
             {"type": "kill_boss", "target": "Информатор (Особый класс)", "goal": 1,
              "hint": "Победи Информатора"},
             {"type": "have_item", "target": "Досье Реджи", "goal": 1,
              "hint": "Забери Досье Реджи"},
         ],
-        "reward_gold": 15000,
-        "reward_exp": 12000,
+        "reward_gold": 12750,
+        "reward_exp": 10200,
         "temp_district": {
             "id": "info_hideout",
             "name": "Убежище Информатора",
@@ -901,7 +987,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Информатор (Особый класс)",
-                "hp": 5400, "dmg_min": 115, "dmg_max": 148, "defense": 0.41,
+                "hp": 5900, "dmg_min": 195, "dmg_max": 250, "defense": 0.41,
                 "emoji": "📡", "reward_gold": 5500, "reward_exp": 4400,
                 "drop_item": ("Досье Реджи", "легендарный", 1),
             },
@@ -919,15 +1005,19 @@ CHAPTERS = [
         "steps": [
             {"type": "reach", "target": "colony_day2", "goal": 3,
              "hint": "🚶 Пройди 3 патруля, чтобы Громила нашёл тебя"},
+            {"type": "kill", "target": "2-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 2-го класса"},
             {"type": "puzzle", "target": "reggie_riddle", "goal": 1,
              "hint": "🧩 Отгадай загадку про Технику Договора"},
+            {"type": "collect", "target": "Кровавая Монета", "goal": 5,
+             "hint": "📦 Принеси 5× Кровавая Монета"},
             {"type": "kill_boss", "target": "Громила Реджи (Особый класс)", "goal": 1,
              "hint": "Победи Громилу"},
             {"type": "have_item", "target": "Долговая Расписка", "goal": 1,
              "hint": "Забери Долговую Расписку"},
         ],
-        "reward_gold": 16500,
-        "reward_exp": 13200,
+        "reward_gold": 14025,
+        "reward_exp": 11220,
         "temp_district": {
             "id": "colony_day2",
             "name": "Колония — День 2",
@@ -941,7 +1031,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Громила Реджи (Особый класс)",
-                "hp": 5800, "dmg_min": 122, "dmg_max": 156, "defense": 0.42,
+                "hp": 6400, "dmg_min": 210, "dmg_max": 270, "defense": 0.42,
                 "emoji": "💪", "reward_gold": 6000, "reward_exp": 4800,
                 "drop_item": ("Долговая Расписка", "легендарный", 1),
             },
@@ -957,19 +1047,23 @@ CHAPTERS = [
             "Каждое его слово — сделка. Каждая твоя ошибка — долг."
         ),
         "steps": [
-            {"type": "find", "target": "Зал Договора", "goal": 1,
+            {"type": "find", "target": "reggie_hall", "goal": 1,
              "hint": "📍 Найди Зал Договора"},
+            {"type": "kill", "target": "1-й класс", "goal": 4,
+             "hint": "Изгони 4 проклятия 1-го класса"},
             {"type": "puzzle", "target": "reggie_code", "goal": 1,
              "hint": "🧩 Разгадай код кредита Реджи"},
             {"type": "kill", "target": "reggie_hall", "goal": 4,
              "hint": "Изгони 4 подставных игрока Реджи"},
+            {"type": "collect", "target": "Кровавая Расписка", "goal": 5,
+             "hint": "📦 Принеси 5× Кровавая Расписка"},
             {"type": "kill_boss", "target": "Реджи Стар (Особый класс)", "goal": 1,
              "hint": "Победи Реджи Стара (первый этап)"},
             {"type": "have_item", "target": "Печать Договора", "goal": 1,
              "hint": "Забери Печать Договора"},
         ],
-        "reward_gold": 18000,
-        "reward_exp": 14400,
+        "reward_gold": 15300,
+        "reward_exp": 12240,
         "temp_district": {
             "id": "reggie_hall",
             "name": "Зал Договора",
@@ -983,7 +1077,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Реджи Стар (Особый класс)",
-                "hp": 6500, "dmg_min": 130, "dmg_max": 168, "defense": 0.43,
+                "hp": 7000, "dmg_min": 230, "dmg_max": 290, "defense": 0.43,
                 "emoji": "💳", "reward_gold": 8000, "reward_exp": 6400,
                 "drop_item": ("Печать Договора", "легендарный", 1),
             },
@@ -999,21 +1093,25 @@ CHAPTERS = [
             "Он собрал всё, что накопил в колонии. Его Техника Договора — на грани разрыва."
         ),
         "steps": [
-            {"type": "find", "target": "Арена Реджи", "goal": 1,
+            {"type": "find", "target": "reggie_arena", "goal": 1,
              "hint": "📍 Найди Арену Реджи"},
             {"type": "reach", "target": "reggie_arena", "goal": 3,
              "hint": "🚶 Пройди 3 патруля в Арене Реджи"},
+            {"type": "kill", "target": "1-й класс", "goal": 5,
+             "hint": "Изгони 5 проклятий 1-го класса"},
             {"type": "puzzle", "target": "final_sequence", "goal": 1,
              "hint": "🧩 Активируй печати Договора в правильном порядке"},
             {"type": "puzzle", "target": "final_code", "goal": 1,
              "hint": "🧩 Разгадай код разрыва Договора"},
+            {"type": "collect", "target": "Печать Арбитра", "goal": 5,
+             "hint": "📦 Принеси 5× Печать Арбитра"},
             {"type": "kill_boss", "target": "Реджи Стар — Финальная Форма (Особый класс)", "goal": 1,
              "hint": "Победи Реджи — Финальную Форму"},
             {"type": "have_item", "target": "Сердце Договора", "goal": 1,
              "hint": "Забери Сердце Договора"},
         ],
-        "reward_gold": 25000,
-        "reward_exp": 20000,
+        "reward_gold": 21250,
+        "reward_exp": 17000,
         "temp_district": {
             "id": "reggie_arena",
             "name": "Арена Реджи",
@@ -1027,7 +1125,7 @@ CHAPTERS = [
             ],
             "boss": {
                 "name": "Реджи Стар — Финальная Форма (Особый класс)",
-                "hp": 8000, "dmg_min": 140, "dmg_max": 180, "defense": 0.45,
+                "hp": 9000, "dmg_min": 260, "dmg_max": 330, "defense": 0.45,
                 "emoji": "💀", "reward_gold": 15000, "reward_exp": 12000,
                 "drop_item": ("Сердце Договора", "легендарный", 3),
             },
@@ -1037,145 +1135,73 @@ CHAPTERS = [
 
 
 # ============================================================
-#  ГОЛОВОЛОМКИ (20)
+#  ГОЛОВОЛОМКИ
 # ============================================================
 PUZZLES = {
-    "gojo_cipher": {
-        "chapter_id": "finger_hunt",
-        "type": "cipher",
-        "shift": 3,
+    "gojo_cipher": {"chapter_id": "finger_hunt", "type": "cipher", "shift": 3,
         "answer": "ПОДВАЛ",
-        "flavor": "Среди вещей Хранителя Пальца — потрёпанный блокнот с шифром Цезаря (сдвиг 3).",
-    },
-    "hospital_code": {
-        "chapter_id": "hospital_finger",
-        "type": "code_lock",
-        "code": "683",
+        "flavor": "Среди вещей Хранителя Пальца — потрёпанный блокнот с шифром Цезаря (сдвиг 3)."},
+    "hospital_code": {"chapter_id": "hospital_finger", "type": "code_lock", "code": "683",
         "clues": ["Первая: 9 − 3", "Вторая: 2 × 4", "Третья: 12 / 4"],
-        "flavor": "На двери в морг — механический замок на 3 цифры.",
-    },
-    "subway_graffiti": {
-        "chapter_id": "subway_finger",
-        "type": "graffiti",
+        "flavor": "На двери в морг — механический замок на 3 цифры."},
+    "subway_graffiti": {"chapter_id": "subway_finger", "type": "graffiti",
         "mapping": [("🔺", "С"), ("🔵", "Т"), ("⭐", "О"), ("⬛", "П")],
-        "word_symbols": "🔺🔵⭐⬛",
-        "answer": "СТОП",
-        "flavor": "На стене вагона — граффити с символами и буквами. Ключ к тому, что нужно сделать.",
-    },
-    "seal_sequence": {
-        "chapter_id": "awakening",
-        "type": "sequence",
-        "sequence": ["🔵", "🔺", "⭐", "⬛"],
-        "symbols": ["🔺", "🔵", "⬛", "⭐"],
-        "flavor": "Чтобы пройти барьер, нужно зажечь печати в правильном порядке. Ошибёшься — все гаснут.",
-    },
-    "infinity_riddle": {
-        "chapter_id": "shibuya_incident",
-        "type": "riddle",
+        "word_symbols": "🔺🔵⭐⬛", "answer": "СТОП",
+        "flavor": "На стене вагона — граффити с символами и буквами. Ключ к тому, что нужно сделать."},
+    "seal_sequence": {"chapter_id": "awakening", "type": "sequence",
+        "sequence": ["🔵", "🔺", "⭐", "⬛"], "symbols": ["🔺", "🔵", "⬛", "⭐"],
+        "flavor": "Чтобы пройти барьер, нужно зажечь печати в правильном порядке. Ошибёшься — все гаснут."},
+    "infinity_riddle": {"chapter_id": "shibuya_incident", "type": "riddle",
         "question": "«Между мной и любой атакой остаётся зазор — он замедляет всё, будто пространство растягивается. Как называется эта техника?»",
         "answers": ["бесконечность", "муре кушо", "мурё кусё", "предел безграничного"],
-        "flavor": "Голос Годжо в голове загадывает загадку, чтобы отвлечь от паники.",
-    },
-    "prison_code": {
-        "chapter_id": "first_grade_hunt",
-        "type": "code_lock",
-        "code": "1974",
+        "flavor": "Голос Годжо в голове загадывает загадку, чтобы отвлечь от паники."},
+    "prison_code": {"chapter_id": "first_grade_hunt", "type": "code_lock", "code": "1974",
         "clues": ["Первая: 20 − 19", "Вторая: 3 × 3", "Третья: 7 + 0", "Четвёртая: 8 / 2"],
-        "flavor": "Сейф в кабинете начальника тюрьмы. Замок на 4 цифры.",
-    },
-    "colony_rules": {
-        "chapter_id": "culling_game_start",
-        "type": "sequence",
-        "sequence": ["🟥", "🟦", "🟩", "🟨", "🟪"],
-        "symbols": ["🟦", "🟥", "🟨", "🟩", "🟪"],
-        "flavor": "Активируй печати барьера в порядке цветов радуги. Ошибёшься — начинай заново.",
-    },
-    "colony_graffiti": {
-        "chapter_id": "tokyo_colony_day1",
-        "type": "graffiti",
+        "flavor": "Сейф в кабинете начальника тюрьмы. Замок на 4 цифры."},
+    "colony_rules": {"chapter_id": "culling_game_start", "type": "sequence",
+        "sequence": ["🟥", "🟦", "🟩", "🟨", "🟪"], "symbols": ["🟦", "🟥", "🟨", "🟩", "🟪"],
+        "flavor": "Активируй печати барьера в порядке цветов радуги. Ошибёшься — начинай заново."},
+    "colony_graffiti": {"chapter_id": "tokyo_colony_day1", "type": "graffiti",
         "mapping": [("🌑", "Т"), ("🎯", "О"), ("🔪", "К"), ("💀", "Й"), ("🔵", "О")],
-        "word_symbols": "🌑🎯🔪💀🔵",
-        "answer": "ТОКИО",
-        "flavor": "На стене — граффити с символами и буквами. Название колонии.",
-    },
-    "colony_riddle": {
-        "chapter_id": "colony_tribunal",
-        "type": "riddle",
+        "word_symbols": "🌑🎯🔪💀🔵", "answer": "ТОКИО",
+        "flavor": "На стене — граффити с символами и буквами. Название колонии."},
+    "colony_riddle": {"chapter_id": "colony_tribunal", "type": "riddle",
         "question": "«Я не имею тела, но могу убить. Я не имею голоса, но меня слышат. Я появляюсь у каждого, кто вошёл в игру. Что я?»",
         "answers": ["долг", "правило", "правила", "очки"],
-        "flavor": "Судья Колонии зачитывает загадку перед началом трибунала.",
-    },
-    "alley_cipher": {
-        "chapter_id": "alley_massacre",
-        "type": "cipher",
-        "shift": 5,
+        "flavor": "Судья Колонии зачитывает загадку перед началом трибунала."},
+    "alley_cipher": {"chapter_id": "alley_massacre", "type": "cipher", "shift": 5,
         "answer": "СИНХРОН",
-        "flavor": "На стене переулка — послание близнецов. Шифр Цезаря, сдвиг 5.",
-    },
-    "yuji_riddle": {
-        "chapter_id": "yuji_hana",
-        "type": "riddle",
+        "flavor": "На стене переулка — послание близнецов. Шифр Цезаря, сдвиг 5."},
+    "yuji_riddle": {"chapter_id": "yuji_hana", "type": "riddle",
         "question": "«Моя сила не в ПЭ, а в ударе. Каждый мой удар — как ритуал. Как называется моя техника?»",
         "answers": ["кулак", "черная вспышка", "чёрная вспышка", "удар"],
-        "flavor": "Юдзи смотрит на костёр и загадывает про свою технику.",
-    },
-    "exit_code": {
-        "chapter_id": "exit_points",
-        "type": "code_lock",
-        "code": "2024",
+        "flavor": "Юдзи смотрит на костёр и загадывает про свою технику."},
+    "exit_code": {"chapter_id": "exit_points", "type": "code_lock", "code": "2024",
         "clues": ["Первая: 5 − 3", "Вторая: 10 × 0", "Третья: 12 / 6", "Четвёртая: 2 × 2"],
-        "flavor": "На замке врат выгравированы подсказки. Нужен код из 4 цифр.",
-    },
-    "strong_graffiti": {
-        "chapter_id": "strong_players",
-        "type": "graffiti",
+        "flavor": "На замке врат выгравированы подсказки. Нужен код из 4 цифр."},
+    "strong_graffiti": {"chapter_id": "strong_players", "type": "graffiti",
         "mapping": [("⚔️", "М"), ("🗡️", "Е"), ("🩸", "Ч"), ("💀", "Т"), ("🏆", "А")],
-        "word_symbols": "⚔️🗡️🩸💀🏆",
-        "answer": "МЕЧТА",
-        "flavor": "На стене арены — граффити с символами и буквами. Мечта, оставленная кем-то.",
-    },
-    "megumi_sequence": {
-        "chapter_id": "megumi_call",
-        "type": "sequence",
-        "sequence": ["🐕", "🐺", "🦉", "🐘", "🐍"],
-        "symbols": ["🐺", "🐕", "🦉", "🐍", "🐘"],
-        "flavor": "Активируй тени Мегуми в порядке возрастания силы.",
-    },
-    "prep_cipher": {
-        "chapter_id": "prep_for_reggie",
-        "type": "cipher",
-        "shift": 4,
+        "word_symbols": "⚔️🗡️🩸💀🏆", "answer": "МЕЧТА",
+        "flavor": "На стене арены — граффити с символами и буквами. Мечта, оставленная кем-то."},
+    "megumi_sequence": {"chapter_id": "megumi_call", "type": "sequence",
+        "sequence": ["🐕", "🐺", "🦉", "🐘", "🐍"], "symbols": ["🐺", "🐕", "🦉", "🐍", "🐘"],
+        "flavor": "Активируй тени Мегуми в порядке возрастания силы."},
+    "prep_cipher": {"chapter_id": "prep_for_reggie", "type": "cipher", "shift": 4,
         "answer": "ДОСЬЕ",
-        "flavor": "Информатор оставил шифр на стене бункера. Сдвиг 4.",
-    },
-    "reggie_riddle": {
-        "chapter_id": "colony_day2",
-        "type": "riddle",
+        "flavor": "Информатор оставил шифр на стене бункера. Сдвиг 4."},
+    "reggie_riddle": {"chapter_id": "colony_day2", "type": "riddle",
         "question": "«Я беру твоё, превращаю в своё, и возвращаю тебе болью. Что я?»",
         "answers": ["долг", "кредит", "договор", "техника договора"],
-        "flavor": "Громила Реджи проговаривает вслух главный принцип Техники Договора.",
-    },
-    "reggie_code": {
-        "chapter_id": "reggie_meeting",
-        "type": "code_lock",
-        "code": "7500",
+        "flavor": "Громила Реджи проговаривает вслух главный принцип Техники Договора."},
+    "reggie_code": {"chapter_id": "reggie_meeting", "type": "code_lock", "code": "7500",
         "clues": ["Первая: 3 + 4", "Вторая: 2 + 3", "Третья: 5 + 0", "Четвёртая: 7 − 7"],
-        "flavor": "Реджи предлагает сделку. Код на его сейфе — четыре цифры.",
-    },
-    "final_sequence": {
-        "chapter_id": "reggie_final",
-        "type": "sequence",
-        "sequence": ["💳", "🩸", "💀", "⚰️", "🔥"],
-        "symbols": ["🩸", "💳", "⚔️", "🔥", "💀", "⚰️"],
-        "flavor": "Печати Договора — последняя защита Реджи. Порядок: кредит → кровь → смерть → погребение → огонь.",
-    },
-    "final_code": {
-        "chapter_id": "reggie_final",
-        "type": "code_lock",
-        "code": "0000",
+        "flavor": "Реджи предлагает сделку. Код на его сейфе — четыре цифры."},
+    "final_sequence": {"chapter_id": "reggie_final", "type": "sequence",
+        "sequence": ["💳", "🩸", "💀", "⚰️", "🔥"], "symbols": ["🩸", "💳", "⚔️", "🔥", "💀", "⚰️"],
+        "flavor": "Печати Договора — последняя защита Реджи. Порядок: кредит → кровь → смерть → погребение → огонь."},
+    "final_code": {"chapter_id": "reggie_final", "type": "code_lock", "code": "0000",
         "clues": ["Ноль", "Ноль", "Ноль", "Ноль"],
-        "flavor": "Код разрыва Договора — обнуление. Твой долг перед Реджи — пустота.",
-    },
+        "flavor": "Код разрыва Договора — обнуление. Твой долг перед Реджи — пустота."},
 }
 
 RU_ALPHABET = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
@@ -1392,8 +1418,6 @@ def _ensure_table():
             finished      INTEGER NOT NULL DEFAULT 0
         )
     """)
-    # Миграция: если игрок «закончил» сюжет на старом (меньшем) числе глав —
-    # снимаем флаг, чтобы он мог пройти новые главы.
     conn.execute(
         "UPDATE player_story SET finished = 0 "
         "WHERE finished = 1 AND chapter_idx < ?",
@@ -1506,9 +1530,8 @@ def exit_temp(user_id: int):
 def add_progress(user_id: int, kind: str, target: str | None = None,
                  amount: int = 1) -> list[dict]:
     """Двигает прогресс активных шагов главы с подходящим типом.
-
-    Типы шагов: kill / kill_boss / puzzle / find / talk / reach / have_item.
-    """
+    Шаги have_item и collect проверяются только через инвентарь
+    (см. _check_item_steps), поэтому здесь пропускаются."""
     chapter = get_current_chapter(user_id)
     if not chapter:
         return []
@@ -1519,7 +1542,7 @@ def add_progress(user_id: int, kind: str, target: str | None = None,
 
     for i, step in enumerate(chapter["steps"]):
         stype = step["type"]
-        if stype == "have_item":
+        if stype in ("have_item", "collect"):
             continue
         if stype != kind:
             continue
@@ -1539,9 +1562,12 @@ def add_progress(user_id: int, kind: str, target: str | None = None,
     return completed_steps
 
 
-def _check_have_item_steps(user_id: int, chapter: dict, progress: dict) -> dict:
+def _check_item_steps(user_id: int, chapter: dict, progress: dict) -> dict:
+    """Обновляет прогресс шагов have_item и collect по текущему инвентарю.
+    have_item — предмет будет списан при завершении главы.
+    collect   — предмет НЕ списывается (это сырьё, жалко)."""
     for i, step in enumerate(chapter["steps"]):
-        if step["type"] != "have_item":
+        if step["type"] not in ("have_item", "collect"):
             continue
         key = str(i)
         have = database.count_item(user_id, step["target"])
@@ -1556,7 +1582,7 @@ def check_and_finish(user_id: int) -> dict | None:
         return None
 
     state = _get_row(user_id)
-    progress = _check_have_item_steps(user_id, chapter, state["progress"])
+    progress = _check_item_steps(user_id, chapter, state["progress"])
     state["progress"] = progress
     _save(user_id, state)
 
@@ -1572,10 +1598,12 @@ def check_and_finish(user_id: int) -> dict | None:
     new_level, leveled = database.add_exp_and_level(user_id, exp)
 
     for step in chapter["steps"]:
-        if step["type"] == "have_item":
-            if step["target"] == "Палец Сукуны":
-                continue
-            database.consume_item(user_id, step["target"], step["goal"])
+        # Списываем только "have_item" — "collect" остаётся в инвентаре
+        if step["type"] != "have_item":
+            continue
+        if step["target"] == "Палец Сукуны":
+            continue
+        database.consume_item(user_id, step["target"], step["goal"])
 
     state["chapter_idx"] += 1
     state["progress"] = {}
@@ -1635,7 +1663,11 @@ def format_story_screen(user_id: int) -> str:
     lines.append("<b>Задачи:</b>")
 
     for i, step in enumerate(chapter["steps"]):
-        prog = state["progress"].get(str(i), 0)
+        if step["type"] in ("collect", "have_item"):
+            have = database.count_item(user_id, step["target"])
+            prog = min(step["goal"], have)
+        else:
+            prog = state["progress"].get(str(i), 0)
         goal = step["goal"]
         status = "✅" if prog >= goal else "⏳"
         bar = _progress_bar(prog, goal)
@@ -1686,7 +1718,11 @@ def get_school_message(user_id: int) -> str | None:
         return None
     state = _get_row(user_id)
     for i, step in enumerate(chapter["steps"]):
-        prog = state["progress"].get(str(i), 0)
+        if step["type"] in ("collect", "have_item"):
+            have = database.count_item(user_id, step["target"])
+            prog = min(step["goal"], have)
+        else:
+            prog = state["progress"].get(str(i), 0)
         if prog < step["goal"]:
             sp = _chapter_speaker(chapter)
             if sp["narrator"]:
@@ -1701,10 +1737,6 @@ def get_school_message(user_id: int) -> str | None:
 
 
 def get_current_npc(user_id: int) -> dict | None:
-    """Возвращает NPC текущей temp-локации, с которым нужно поговорить.
-    Сравниваем по id И по отображаемому имени — target в шаге может быть любым.
-    Добавляет служебный ключ _step_target — точное значение step["target"],
-    чтобы talk_to_current_npc передал его же в add_progress."""
     chapter = get_current_chapter(user_id)
     if not chapter:
         return None
@@ -1729,12 +1761,10 @@ def get_current_npc(user_id: int) -> dict | None:
 
 
 def talk_to_current_npc(user_id: int) -> dict:
-    """Игрок нажал «Поговорить». Двигает talk-шаг."""
     npc = get_current_npc(user_id)
     if not npc:
         return {"ok": False, "msg": "Здесь не с кем поговорить.", "npc": None}
 
-    # Передаём именно step["target"], чтобы add_progress сматчил шаг
     target = npc.get("_step_target") or npc.get("id")
     done = add_progress(user_id, "talk", target=target, amount=1)
     msg = f"💬 <b>{npc['name']}:</b> <i>«{npc['line']}»</i>"
@@ -1744,10 +1774,8 @@ def talk_to_current_npc(user_id: int) -> dict:
 
 
 def register_find_step(user_id: int, district_id: str) -> list[dict]:
-    """Вызывать при входе игрока в temp-локацию."""
     return add_progress(user_id, "find", target=district_id, amount=1)
 
 
 def register_reach_step(user_id: int, district_id: str) -> list[dict]:
-    """Вызывать при патруле в temp-локации."""
     return add_progress(user_id, "reach", target=district_id, amount=1)

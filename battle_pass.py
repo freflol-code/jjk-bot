@@ -15,15 +15,12 @@ BP-очки начисляются за ЗАБРАННЫЕ ежедневные 
 
 Сезон: 60 дней. При старте нового сезона прогресс сбрасывается.
 
-Награды:
-- голд/опыт — базово на каждом уровне (растёт с уровнем)
-- предметы на «якорных» уровнях (5, 10, 15, ..., 50)
-- премиум-эксклюзивы: случайные техники, эксклюзивные статусы
-
-Тюнинг:
-- BATTLE_PASS_BASE_XP  — поднять/опустить стоимость всего трека
-- BP_XP_DAILY/WEEKLY   — сколько BP даётся за квест
-- FREE_SPECIAL/PREM_SPECIAL — награды на якорных уровнях
+🎲 РАНДОМ НАГРАД:
+Награды на якорных уровнях (5/10/15/…/50) генерируются детерминированно
+из `season_id`. Один и тот же сезон всегда даёт одни и те же награды,
+но разные сезоны — разные. Сезон S1 может дать технику «Огненный шар»,
+а сезон S2 — «Ледяную стрелу». Эксклюзивные статусы тоже per-season:
+`battle_pass_s1`, `battle_pass_s2`, и т.д.
 """
 import json
 import random
@@ -49,7 +46,6 @@ BP_PREMIUM_PAYLOAD_PREFIX = "bp_premium_season_"
 # ============================================================
 
 def level_xp(level):
-    """Сколько XP нужно, чтобы закрыть конкретный уровень (level: 1..50)."""
     if level < 1:
         level = 1
     if level > BATTLE_PASS_LEVELS:
@@ -58,8 +54,6 @@ def level_xp(level):
 
 
 def xp_for_level(level):
-    """Суммарный XP, чтобы ДОСТИЧЬ уровня level.
-    level=1 → 0. level=2 → level_xp(1). level=51 → полный трек."""
     if level <= 1:
         return 0
     return sum(level_xp(i) for i in range(1, level))
@@ -70,7 +64,6 @@ def total_xp_full_track():
 
 
 def level_from_xp(xp):
-    """Из накопленного XP — текущий уровень (1..50)."""
     level = 1
     while level < BATTLE_PASS_LEVELS:
         if xp >= xp_for_level(level + 1):
@@ -116,7 +109,6 @@ def _ensure_tables():
 
 
 def get_active_season():
-    """ID текущего сезона. Создаёт новый, если предыдущий истёк."""
     _ensure_tables()
     conn = database.get_conn()
     cur = conn.cursor()
@@ -142,7 +134,6 @@ def get_active_season():
 
 
 def get_season_info():
-    """dict: id, started_at, ends_at."""
     _ensure_tables()
     season_id = get_active_season()
     conn = database.get_conn()
@@ -155,7 +146,6 @@ def get_season_info():
 
 
 def _get_row(user_id):
-    """Запись игрока в текущем сезоне. Создаёт при отсутствии."""
     _ensure_tables()
     season_id = get_active_season()
     conn = database.get_conn()
@@ -199,7 +189,6 @@ def _save(user_id, season_id, xp, premium, claimed_free, claimed_prem, purchased
 # ============================================================
 
 def add_xp(user_id, amount):
-    """Начисляет BP XP. Возвращает (старый_уровень, новый_уровень)."""
     if amount <= 0:
         return (0, 0)
     row = _get_row(user_id)
@@ -217,8 +206,6 @@ def add_xp(user_id, amount):
 
 
 def on_quest_claimed(user_id, period):
-    """Хук из quests.claim/claim_all_ready.
-    Начисляет BP XP за забранное задание."""
     if period == "daily":
         return add_xp(user_id, BP_XP_DAILY)
     if period == "weekly":
@@ -227,7 +214,6 @@ def on_quest_claimed(user_id, period):
 
 
 def get_progress(user_id):
-    """dict с прогрессом игрока в текущем сезоне."""
     row = _get_row(user_id)
     xp = row["xp"] or 0
     return {
@@ -241,7 +227,6 @@ def get_progress(user_id):
 
 
 def grant_premium(user_id):
-    """Выдать премиум (после оплаты). True, если это новая покупка."""
     row = _get_row(user_id)
     if row["premium"]:
         return False
@@ -255,57 +240,178 @@ def grant_premium(user_id):
 
 
 # ============================================================
-#  НАГРАДЫ
+#  🎲 РАНДОМНЫЕ НАГРАДЫ ПО СЕЗОНАМ
 # ============================================================
 
-FREE_SPECIAL = {
-    5:  [{"type": "item", "name": "🍜 Рамен додзё", "rarity": "расходник", "qty": 5}],
-    10: [{"type": "item", "name": "🧧 Талисман силы", "rarity": "расходник", "qty": 1}],
-    15: [{"type": "exp", "amount": 1000}],
-    20: [{"type": "item", "name": "🧪 Проклятая микстура", "rarity": "расходник", "qty": 1}],
-    25: [{"type": "technique_random", "rarity": "Обычная", "count": 1}],
-    30: [{"type": "item", "name": "🛡 Талисман стойкости", "rarity": "расходник", "qty": 2}],
-    35: [{"type": "exp", "amount": 2000}],
-    40: [{"type": "technique_random", "rarity": "Редкая", "count": 1}],
-    45: [{"type": "item", "name": "📜 Свиток опыта Годжо", "rarity": "расходник", "qty": 1}],
-    50: [{"type": "technique_random", "rarity": "Эпическая", "count": 1}],
-}
+# Пул возможных наград на якорных уровнях.
+# Конкретные цифры (qty / amount) роллятся из шаблона при генерации сезона.
 
-PREM_SPECIAL = {
-    5:  [{"type": "item", "name": "🧧 Талисман силы", "rarity": "расходник", "qty": 5},
-         {"type": "item", "name": "🛡 Талисман стойкости", "rarity": "расходник", "qty": 5}],
-    10: [{"type": "technique_random", "rarity": "Редкая", "count": 1}],
-    15: [{"type": "exp", "amount": 5000}],
-    20: [{"type": "item", "name": "🧪 Проклятая микстура", "rarity": "расходник", "qty": 5}],
-    25: [{"type": "status", "key": "battle_pass_s1"}],
-    30: [{"type": "item", "name": "🎯 Метка Годжо", "rarity": "расходник", "qty": 3}],
-    35: [{"type": "exp", "amount": 10000}],
-    40: [{"type": "technique_random", "rarity": "Эпическая", "count": 1}],
-    45: [{"type": "gold", "amount": 50000}, {"type": "exp", "amount": 15000}],
-    50: [{"type": "technique_random", "rarity": "Легендарная (Особый класс)", "count": 1},
-         {"type": "status", "key": "battle_pass_s1_elite"}],
-}
+FREE_ITEM_POOL = [
+    {"type": "item", "name": "🍜 Рамен додзё", "rarity": "расходник", "qty_range": (3, 8)},
+    {"type": "item", "name": "🧧 Талисман силы", "rarity": "расходник", "qty_range": (1, 3)},
+    {"type": "item", "name": "🧪 Проклятая микстура", "rarity": "расходник", "qty_range": (1, 2)},
+    {"type": "item", "name": "🛡 Талисман стойкости", "rarity": "расходник", "qty_range": (1, 3)},
+    {"type": "item", "name": "💠 Талисман потока", "rarity": "расходник", "qty_range": (1, 2)},
+    {"type": "item", "name": "⚫ Талисман Вспышки", "rarity": "расходник", "qty_range": (1, 2)},
+    {"type": "item", "name": "📜 Свиток опыта Годжо", "rarity": "расходник", "qty_range": (1, 2)},
+    {"type": "exp", "amount_range": (800, 2000)},
+    {"type": "exp", "amount_range": (2000, 5000)},
+]
+
+FREE_TECH_RARITIES = ["Обычная", "Редкая", "Редкая", "Эпическая"]
+
+PREM_ITEM_POOL = [
+    {"type": "item", "name": "🧧 Талисман силы", "rarity": "расходник", "qty_range": (3, 8)},
+    {"type": "item", "name": "🛡 Талисман стойкости", "rarity": "расходник", "qty_range": (3, 8)},
+    {"type": "item", "name": "💠 Талисман потока", "rarity": "расходник", "qty_range": (2, 5)},
+    {"type": "item", "name": "⚫ Талисман Вспышки", "rarity": "расходник", "qty_range": (2, 5)},
+    {"type": "item", "name": "🧬 Эликсир роста", "rarity": "расходник", "qty_range": (1, 3)},
+    {"type": "item", "name": "💰 Эликсир охотника", "rarity": "расходник", "qty_range": (1, 3)},
+    {"type": "item", "name": "🎯 Метка Годжо", "rarity": "расходник", "qty_range": (2, 5)},
+    {"type": "item", "name": "🧭 Компас Скверны", "rarity": "расходник", "qty_range": (2, 5)},
+    {"type": "item", "name": "📜 Свиток опыта Годжо", "rarity": "расходник", "qty_range": (2, 5)},
+    {"type": "exp", "amount_range": (5000, 15000)},
+    {"type": "gold", "amount_range": (20000, 80000)},
+]
+
+PREM_TECH_RARITIES = ["Редкая", "Эпическая", "Эпическая", "Мифическая", "Легендарная (Особый класс)"]
+
+_ANCHOR_LEVELS = (5, 10, 15, 20, 25, 30, 35, 40, 45, 50)
+
+_season_cache = {}
 
 
-def get_reward(level, tier):
+def _materialize_reward(rng, template):
+    """Превращает шаблон в конкретную награду, ролля количество/сумму."""
+    out = {k: v for k, v in template.items() if not k.endswith("_range")}
+    if "qty_range" in template:
+        lo, hi = template["qty_range"]
+        out["qty"] = rng.randint(lo, hi)
+    if "amount_range" in template:
+        lo, hi = template["amount_range"]
+        out["amount"] = rng.randint(lo, hi)
+    return out
+
+
+def _generate_season_rewards(season_id):
+    """Генерирует таблицу наград на сезон детерминированно.
+    Возвращает (free_special, prem_special) — dict {level: [rewards]}."""
+    rng = random.Random(f"bp:{season_id}")
+
+    free_special = {}
+    prem_special = {}
+
+    # --- Бесплатный трек: 10 якорей, из них 3 — техники ---
+    free_levels = list(_ANCHOR_LEVELS)
+    rng.shuffle(free_levels)
+    tech_levels = set(free_levels[:3])
+
+    for lvl in _ANCHOR_LEVELS:
+        rewards = []
+        if lvl in tech_levels:
+            rarity = rng.choice(FREE_TECH_RARITIES)
+            rewards.append({"type": "technique_random", "rarity": rarity, "count": 1})
+        else:
+            picks = rng.sample(FREE_ITEM_POOL, k=rng.randint(1, 2))
+            for p in picks:
+                rewards.append(_materialize_reward(rng, p))
+        free_special[lvl] = rewards
+
+    # --- Премиум трек: 10 якорей, 25 и 50 — эксклюзивные статусы ---
+    status_key_25 = f"battle_pass_{season_id.lower()}"
+    status_key_50 = f"battle_pass_{season_id.lower()}_elite"
+
+    for lvl in _ANCHOR_LEVELS:
+        rewards = []
+        if lvl == 25:
+            rewards.append({"type": "status", "key": status_key_25})
+            picks = rng.sample(PREM_ITEM_POOL, k=1)
+            rewards.append(_materialize_reward(rng, picks[0]))
+        elif lvl == 50:
+            rewards.append({"type": "status", "key": status_key_50})
+            rewards.append({
+                "type": "technique_random",
+                "rarity": "Легендарная (Особый класс)",
+                "count": 1,
+            })
+        elif lvl % 10 == 0:
+            rarity = rng.choice(PREM_TECH_RARITIES)
+            rewards.append({"type": "technique_random", "rarity": rarity, "count": 1})
+        else:
+            picks = rng.sample(PREM_ITEM_POOL, k=rng.randint(2, 3))
+            for p in picks:
+                rewards.append(_materialize_reward(rng, p))
+        prem_special[lvl] = rewards
+
+    return free_special, prem_special
+
+
+def get_season_rewards(season_id):
+    """Возвращает (free_special, prem_special) для сезона, с кэшем."""
+    if season_id not in _season_cache:
+        _season_cache[season_id] = _generate_season_rewards(season_id)
+    return _season_cache[season_id]
+
+
+def _ensure_season_statuses(season_id):
+    """Регистрирует в statuses.STATUSES эксклюзивные статусы сезона,
+    если их там ещё нет. Так каждый сезон получает свои 2 статуса."""
+    try:
+        import statuses
+    except ImportError:
+        return
+    key_25 = f"battle_pass_{season_id.lower()}"
+    key_50 = f"battle_pass_{season_id.lower()}_elite"
+    if key_25 not in statuses.STATUSES:
+        statuses.STATUSES[key_25] = {
+            "emoji": "🎫",
+            "styled": f"❰ ʙᴘ {season_id} ❱",
+            "star_price": 0,
+            "gold_price": 0,
+            "desc": f"Эксклюзив премиум-трека Сезона {season_id} (уровень 25).",
+            "exclusive": True,
+        }
+        if key_25 not in statuses.STATUS_ORDER:
+            statuses.STATUS_ORDER.append(key_25)
+    if key_50 not in statuses.STATUSES:
+        statuses.STATUSES[key_50] = {
+            "emoji": "🏆",
+            "styled": f"◆ {season_id} 𝕰𝖑𝖎𝖙𝖊 ◆",
+            "star_price": 0,
+            "gold_price": 0,
+            "desc": f"Эксклюзив премиум-трека Сезона {season_id} (уровень 50).",
+            "exclusive": True,
+        }
+        if key_50 not in statuses.STATUS_ORDER:
+            statuses.STATUS_ORDER.append(key_50)
+
+
+# ============================================================
+#  НАГРАДЫ: ПОЛУЧЕНИЕ
+# ============================================================
+
+def get_reward(level, tier, season_id=None):
     """Список наград для уровня и трека. tier: 'free' | 'prem'."""
     if level < 1 or level > BATTLE_PASS_LEVELS:
         return []
+    if season_id is None:
+        season_id = get_active_season()
+    free_special, prem_special = get_season_rewards(season_id)
+
     if tier == "free":
         gold = 500 + 100 * level
         exp = 300 + 80 * level
         base = [{"type": "gold", "amount": gold}, {"type": "exp", "amount": exp}]
-        return base + FREE_SPECIAL.get(level, [])
+        return base + free_special.get(level, [])
     elif tier == "prem":
         gold = 1500 + 300 * level
         exp = 900 + 240 * level
         base = [{"type": "gold", "amount": gold}, {"type": "exp", "amount": exp}]
-        return base + PREM_SPECIAL.get(level, [])
+        return base + prem_special.get(level, [])
     return []
 
 
 def _apply_reward(user_id, reward):
-    """Применяет награду. Возвращает строку для лога или None."""
     t = reward.get("type")
     if t == "gold":
         database.add_gold(user_id, reward["amount"])
@@ -342,11 +448,11 @@ def _apply_reward(user_id, reward):
 
 
 def claim_level(user_id, level, tier):
-    """Забрать награду за уровень. tier: 'free' | 'prem'."""
     if level < 1 or level > BATTLE_PASS_LEVELS:
         return {"ok": False, "msg": "Некорректный уровень."}
 
     row = _get_row(user_id)
+    season_id = row["season_id"]
     current_level = level_from_xp(row["xp"] or 0)
     if current_level < level:
         return {"ok": False, "msg": f"🔒 Сначала достигни уровня {level}."}
@@ -363,7 +469,9 @@ def claim_level(user_id, level, tier):
     if tier == "prem" and level in claimed_prem:
         return {"ok": False, "msg": "Награда уже получена."}
 
-    rewards = get_reward(level, tier)
+    _ensure_season_statuses(season_id)
+
+    rewards = get_reward(level, tier, season_id)
     lines = [f"🎫 <b>Уровень {level} · {'💎 Премиум' if tier == 'prem' else '🆓 Бесплатно'}</b>"]
     for r in rewards:
         applied = _apply_reward(user_id, r)
@@ -376,7 +484,7 @@ def claim_level(user_id, level, tier):
         claimed_prem.append(level)
 
     _save(
-        user_id, row["season_id"], row["xp"], row["premium"],
+        user_id, season_id, row["xp"], row["premium"],
         claimed_free, claimed_prem, row["purchased_at"],
     )
 
@@ -384,30 +492,32 @@ def claim_level(user_id, level, tier):
 
 
 def claim_all(user_id):
-    """Забрать все доступные награды (free + prem, если куплен)."""
     row = _get_row(user_id)
+    season_id = row["season_id"]
     current_level = level_from_xp(row["xp"] or 0)
     premium = bool(row["premium"])
     claimed_free = set(json.loads(row["claimed_free"] or "[]"))
     claimed_prem = set(json.loads(row["claimed_prem"] or "[]"))
+
+    _ensure_season_statuses(season_id)
 
     count_free = 0
     count_prem = 0
 
     for level in range(1, current_level + 1):
         if level not in claimed_free:
-            for r in get_reward(level, "free"):
+            for r in get_reward(level, "free", season_id):
                 _apply_reward(user_id, r)
             claimed_free.add(level)
             count_free += 1
         if premium and level not in claimed_prem:
-            for r in get_reward(level, "prem"):
+            for r in get_reward(level, "prem", season_id):
                 _apply_reward(user_id, r)
             claimed_prem.add(level)
             count_prem += 1
 
     _save(
-        user_id, row["season_id"], row["xp"], row["premium"],
+        user_id, season_id, row["xp"], row["premium"],
         sorted(claimed_free), sorted(claimed_prem), row["purchased_at"],
     )
 
@@ -435,13 +545,14 @@ def _format_reward(r):
     if t == "technique_random":
         return f"🎁 Случайная техника ({r['rarity']})"
     if t == "status":
-        return "🎭 Эксклюзивный статус"
+        return "🎭 Эксклюзивный статус сезона"
     return "?"
 
 
 def format_battle_pass(user_id):
     info = get_progress(user_id)
     season = get_season_info()
+    season_id = season["id"]
     level = info["level"]
     xp = info["xp"]
     premium = info["premium"]
@@ -461,7 +572,7 @@ def format_battle_pass(user_id):
         xp_line = f"🎯 До уровня {level + 1}: <b>{have}/{need}</b>"
 
     lines = [
-        f"🎫 <b>Боевой пропуск — Сезон {season['id']}</b>",
+        f"🎫 <b>Боевой пропуск — Сезон {season_id}</b>",
         "",
         f"📅 До конца сезона: <b>{days} д. {hours} ч.</b>",
         f"🧬 BP-очков: <b>{xp}</b> (из {total_xp_full_track()})",
@@ -477,6 +588,12 @@ def format_battle_pass(user_id):
     lines.append(
         f"<i>Очки БП начисляются за забранные квесты: "
         f"+{BP_XP_DAILY} за ежедневный, +{BP_XP_WEEKLY} за недельный.</i>"
+    )
+    lines.append("")
+    lines.append(
+        "<i>🎲 Награды якорных уровней (5/10/15/…/50) в каждом сезоне "
+        "уникальны — техники, предметы и эксклюзивные статусы роллятся "
+        "случайно при старте сезона.</i>"
     )
     return "\n".join(lines)
 
@@ -505,13 +622,14 @@ def format_levels_overview(user_id):
 
 def format_level_detail(user_id, level):
     info = get_progress(user_id)
+    season_id = info["season_id"]
     current_level = info["level"]
     premium = info["premium"]
     claimed_free = set(info["claimed_free"])
     claimed_prem = set(info["claimed_prem"])
 
-    free_rewards = get_reward(level, "free")
-    prem_rewards = get_reward(level, "prem")
+    free_rewards = get_reward(level, "free", season_id)
+    prem_rewards = get_reward(level, "prem", season_id)
 
     lines = [f"🎫 <b>Уровень {level}/{BATTLE_PASS_LEVELS}</b>", ""]
 
@@ -556,7 +674,7 @@ def bp_menu_keyboard(user_id):
     rows.append([InlineKeyboardButton("📜 Список уровней", callback_data="bp_levels")])
     if level >= 1:
         rows.append([InlineKeyboardButton("🎁 Забрать всё доступное", callback_data="bp_claim_all")])
-    rows.append([InlineKeyboardButton("⬅️ В профиль", callback_data="profile_menu")])
+    rows.append([InlineKeyboardButton("⬅️ К заданиям", callback_data="quests_menu")])
     return InlineKeyboardMarkup(rows)
 
 

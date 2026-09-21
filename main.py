@@ -2535,4 +2535,245 @@ async def button_handler(update, context):
         if idx < 0 or idx >= len(items):
             text = "❌ Предмет уже недоступен. Открой меню продажи заново."
             image_path = assets.get_npc_image(f"{npc_id}_shop")
-            await render(query, context, text, shop_menu
+            await render(query, context, text, shop_menu_keyboard(npc_id), image_path=image_path)
+            return
+        name, rarity, qty, price = items[idx]
+        result = shop.sell(user_id, npc_id, name, rarity)
+        player_now = database.get_or_create_player(user_id, "")
+        text = ("✅ " if result["ok"] else "❌ ") + result["msg"] + f"\n\n💠 У тебя: {player_now['gold']}"
+        image_path = assets.get_npc_image(f"{npc_id}_shop")
+        await render(query, context, text, shop_sell_keyboard(npc_id, user_id), image_path=image_path)
+
+    elif data.startswith("gear_menu:"):
+        npc_id = data.split(":", 1)[1]
+        text = ("🏴‍☠️ <b>Склад проклятого оружия</b>\n\n"
+                f"<i>{HAKARI}: «Это мне Маки и Фушигуро помогли добыть, хе-хе. "
+                f"Смотри, что есть. Слабое продам, сильное — скрафти сам из трофеев.»</i>")
+        image_path = assets.get_npc_image("hakari_shop")
+        await render(query, context, text, gear_menu_keyboard(npc_id), image_path=image_path)
+
+    elif data == "gear_shop_list":
+        lines = ["🛒 <b>Оружие на продажу</b>\n"]
+        for name, w in equipment.list_purchasable():
+            owned = database.has_weapon(user_id, name)
+            marker = " ✅ (куплено)" if owned else ""
+            lines.append(
+                f"{w['emoji']} <b>{name}</b> ({w['rarity']}) — {w['price']}💠{marker}\n"
+                f"   <i>{w['desc']}</i>\n"
+                f"   +{w['dmg_bonus_min']}–{w['dmg_bonus_max']} урона, x{w['tech_power']} техник, +{int(w['crit_bonus']*100)}% крит"
+            )
+        await render(query, context, "\n".join(lines), gear_buy_list_keyboard(user_id))
+
+    elif data.startswith("gear_buy:"):
+        idx = int(data.split(":", 1)[1])
+        weapons = equipment.list_purchasable()
+        if idx < 0 or idx >= len(weapons):
+            text = "❌ Оружие недоступно."
+            await render(query, context, text, gear_buy_list_keyboard(user_id))
+            return
+        name, w = weapons[idx]
+        result = equipment.buy(user_id, name)
+        prefix = "✅ " if result["ok"] else "❌ "
+        player_now = database.get_or_create_player(user_id, "")
+        text = prefix + result["msg"] + f"\n\n💠 У тебя: {player_now['gold']}"
+        await render(query, context, text, gear_buy_list_keyboard(user_id))
+
+    elif data == "gear_craft_list":
+        lines = ["🔨 <b>Крафт оружия</b>\n",
+                 "<i>Собери конкретные трофеи нужных проклятий и возвращайся.</i>\n"]
+        for name, w in equipment.list_craftable():
+            recipe = equipment.RECIPES[name]
+            mats = ", ".join(f"{item} ×{q}" for item, q in recipe["materials"].items())
+            owned = database.has_weapon(user_id, name)
+            marker = " ✅" if owned else ""
+            lines.append(
+                f"{w['emoji']} <b>{name}</b> ({w['rarity']}){marker}\n"
+                f"   <i>{w['desc']}</i>\n"
+                f"   +{w['dmg_bonus_min']}–{w['dmg_bonus_max']} урона, x{w['tech_power']} техник, +{int(w['crit_bonus']*100)}% крит\n"
+                f"   Материалы: {mats} + {recipe['gold']}💠"
+            )
+        await render(query, context, "\n".join(lines), gear_craft_list_keyboard())
+
+    elif data.startswith("gear_craft:"):
+        idx = int(data.split(":", 1)[1])
+        weapons = equipment.list_craftable()
+        if idx < 0 or idx >= len(weapons):
+            text = "❌ Оружие недоступно."
+            await render(query, context, text, gear_craft_list_keyboard())
+            return
+        name, w = weapons[idx]
+        check = equipment.check_recipe(user_id, name)
+        if not check["ok"]:
+            miss = "\n".join("  • " + m for m in check["missing"])
+            text = (f"❌ Не хватает ресурсов для <b>{name}</b>:\n{miss}")
+            await render(query, context, text, gear_craft_list_keyboard())
+            return
+        result = equipment.craft(user_id, name)
+        prefix = "✅ " if result["ok"] else "❌ "
+        text = prefix + result["msg"]
+        await render(query, context, text, gear_craft_list_keyboard())
+
+    elif data == "gear_owned":
+        owned = database.get_player_weapons(user_id)
+        if not owned:
+            text = "⚔️ У тебя пока нет оружия. Купи слабое или скрафти из трофеев."
+        else:
+            lines = ["⚔️ <b>Твоё оружие</b>\n"]
+            equipped_name = database.get_equipped_weapon_name(user_id)
+            for name in owned:
+                w = equipment.get_weapon(name)
+                if not w:
+                    continue
+                marker = " 🎯 (экипировано)" if name == equipped_name else ""
+                lines.append(f"{w['emoji']} <b>{name}</b> ({w['rarity']}){marker}")
+            text = "\n".join(lines)
+        await render(query, context, text, gear_owned_keyboard(user_id))
+
+    elif data.startswith("gear_equip:"):
+        idx_str = data.split(":", 1)[1]
+        try:
+            idx = int(idx_str)
+        except ValueError:
+            idx = -1
+        owned = database.get_player_weapons(user_id)
+        if idx < 0 or idx >= len(owned):
+            text = "❌ Оружие недоступно. Открой меню заново."
+            await render(query, context, text, gear_owned_keyboard(user_id))
+            return
+        name = owned[idx]
+        result = equipment.equip(user_id, name)
+        prefix = "✅ " if result["ok"] else "❌ "
+        text = prefix + result["msg"]
+        await render(query, context, text, gear_owned_keyboard(user_id))
+
+    elif data == "gear_unequip":
+        result = equipment.unequip(user_id)
+        prefix = "✅ " if result["ok"] else "❌ "
+        text = prefix + result["msg"]
+        await render(query, context, text, gear_owned_keyboard(user_id))
+
+    elif data == "back_to_game":
+        if context.user_data.pop("prev_screen", None) == "profile":
+            await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
+            return
+        r = raid.get_active_raid_for_user(user_id)
+        if r:
+            await _render_raid_screen(query, context, r["id"], user_id)
+            return
+        encounter = database.get_encounter(user_id)
+        if encounter:
+            fresh_player = database.get_or_create_player(user_id, "")
+            text = (combat.encounter_status_text(encounter) + "\n\n"
+                    + combat.player_status_text(fresh_player, user_id))
+            image_path = assets.get_monster_image(encounter["monster_name"])
+            await render(query, context, text, kb_for(user_id), image_path=image_path)
+        else:
+            text = location_text(user_id, x)
+            await render(query, context, text, kb_for(user_id), image_path=district_image_for_x(x))
+
+    elif data == "noop":
+        return
+
+
+async def delete_message_job(context):
+    data = context.job.data or {}
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
+    if not chat_id or not message_id:
+        return
+    try:
+        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
+    except Exception as e:
+        logger.info(f"Не удалось удалить сообщение {message_id}: {e}")
+
+
+async def spawn_job(context):
+    spawned = monsters.spawn_tick_for_all_players()
+    for user_id, monster, district in spawned:
+        curse_class = monster.get("curse_class", "")
+        if curse_class == "Особый класс":
+            header = "⛔ <b>ОСОБОЕ ПРОКЛЯТИЕ</b> появилось"
+        elif curse_class == "1-й класс":
+            header = "⚠️ <b>Проклятие 1-го ранга</b> появилось"
+        else:
+            header = "👀 <b>Проклятие</b> замечено"
+        text = (
+            f"{header} в локации: "
+            f"{district['emoji']} <b>{district['name']}</b>\n\n"
+            f"Нажми «🩸 Патрулирование», чтобы найти его."
+        )
+        try:
+            msg = await context.bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
+            context.job_queue.run_once(
+                delete_message_job,
+                when=SPAWN_NOTIFY_TTL_SECONDS,
+                data={"chat_id": user_id, "message_id": msg.message_id},
+                name=f"del_spawn_{user_id}_{msg.message_id}",
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось уведомить {user_id}: {e}")
+
+
+async def clear_buffs_job(context):
+    removed = database.clear_expired_buffs()
+    if removed:
+        logger.info(f"Очищено истёкших баффов: {removed}")
+
+
+def migrate_curse_seals():
+    conn = database.get_conn()
+    cur = conn.cursor()
+    total = 0
+    for seal_name in bosses.SUMMON_RECIPES.keys():
+        cur.execute(
+            "UPDATE inventory SET rarity = 'призыв' WHERE item_name = ? AND rarity != 'призыв'",
+            (seal_name,),
+        )
+        total += cur.rowcount
+    conn.commit()
+    if total > 0:
+        logger.info(f"Миграция печатей: исправлено {total} записей")
+
+
+def main():
+    from health import start_health_server
+    start_health_server()
+    database.init_db()
+    rest._ensure_column()
+    try:
+        raid._ensure_tables()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицы рейда: {e}")
+    try:
+        story._ensure_table()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицу сюжета: {e}")
+    try:
+        boss_rush._ensure_tables()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицы клуба: {e}")
+    migrate_curse_seals()
+    app = Application.builder().token(config.BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("map", map_command))
+    app.add_handler(CommandHandler("inventory", inventory_command))
+    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
+    app.job_queue.run_repeating(
+        spawn_job,
+        interval=config.SPAWN_INTERVAL_SECONDS,
+        first=config.SPAWN_INTERVAL_SECONDS,
+    )
+    app.job_queue.run_repeating(
+        clear_buffs_job,
+        interval=BUFF_CLEANUP_INTERVAL,
+        first=BUFF_CLEANUP_INTERVAL,
+    )
+    logger.info("Бот запущен")
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()

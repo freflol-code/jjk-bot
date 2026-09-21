@@ -11,6 +11,12 @@ statuses.py — косметические статусы профиля (ана
 
 Все декорации — только префикс перед ником. Суффикс (💎) — отдельно,
 им управляет VIP-логика. И статус, и значок можно скрыть, не теряя их.
+
+ИСКЛЮЧЕНИЯ:
+- 2 эксклюзивных статуса (`battle_pass_s1`, `battle_pass_s1_elite`)
+  выдаются только за уровни премиум-трека Боевого пропуска.
+  Их нельзя купить за ⭐ или 💠, они не отображаются в списке
+  покупок, пока их нет у игрока.
 """
 import database
 
@@ -100,6 +106,26 @@ STATUSES = {
         "gold_price": 250_000_000,
         "desc": "Пустота. Предел. То, за чем ничего нет.",
     },
+
+    # ---------- ЭКСКЛЮЗИВЫ БОЕВОГО ПРОПУСКА ----------
+    "battle_pass_s1": {
+        "emoji": "🎫",
+        "styled": "❰ ʙᴀᴛᴛʟᴇᴘᴀꜱꜱ ❱",
+        "star_price": 0,
+        "gold_price": 0,
+        "desc": "Эксклюзив премиум-трека Боевого пропуска (уровень 25).",
+        "exclusive": True,
+        "source": "battle_pass_s1",
+    },
+    "battle_pass_s1_elite": {
+        "emoji": "🏆",
+        "styled": "◆ 𝕭𝕻 𝕰𝖑𝖎𝖙𝖊 ◆",
+        "star_price": 0,
+        "gold_price": 0,
+        "desc": "Эксклюзив премиум-трека Боевого пропуска (уровень 50).",
+        "exclusive": True,
+        "source": "battle_pass_s1_elite",
+    },
 }
 
 STATUS_ORDER = list(STATUSES.keys())
@@ -118,14 +144,12 @@ def _fmt_spaced(n):
 
 
 def _is_badge_visible(user_id):
-    """💎 показывается, если VIP активен И игрок не скрыл значок."""
     if not database.has_vip(user_id):
         return False
     return not database.is_vip_badge_hidden(user_id)
 
 
 def get_prefix(user_id):
-    """Декоративный префикс статуса или пустая строка."""
     key = database.get_active_status(user_id)
     if key and key in STATUSES:
         return f"{STATUSES[key]['styled']} "
@@ -133,17 +157,14 @@ def get_prefix(user_id):
 
 
 def get_suffix(user_id):
-    """💎 рядом с ником — если VIP активен и значок не скрыт."""
     return " 💎" if _is_badge_visible(user_id) else ""
 
 
 def decorate_name(user_id, name):
-    """Полное имя с префиксом статуса и суффиксом 💎."""
     return f"{get_prefix(user_id)}{name}{get_suffix(user_id)}"
 
 
 def format_profile_header(user_id):
-    """Заголовок профиля: статус + 💎, если они есть и не скрыты."""
     key = database.get_active_status(user_id)
     badge = get_suffix(user_id)
     if key and key in STATUSES:
@@ -151,12 +172,27 @@ def format_profile_header(user_id):
     return f"👤 <b>Профиль шамана</b>{badge}"
 
 
+def get_visible_statuses(user_id):
+    """Возвращает список ключей для UI. Эксклюзивные (BP) видны,
+    только если уже куплены."""
+    owned = set(database.get_player_statuses(user_id))
+    result = []
+    for key in STATUS_ORDER:
+        st = STATUSES.get(key, {})
+        if st.get("exclusive") and key not in owned:
+            continue
+        result.append(key)
+    return result
+
+
 def buy_with_gold(user_id, key):
     if key not in STATUSES:
         return {"ok": False, "msg": "Такого статуса не существует."}
+    st = STATUSES[key]
+    if st.get("exclusive"):
+        return {"ok": False, "msg": "Этот статус нельзя купить — только эксклюзив Боевого пропуска."}
     if database.has_player_status(user_id, key):
         return {"ok": False, "msg": "У тебя уже есть этот статус."}
-    st = STATUSES[key]
     player = database.get_or_create_player(user_id, "")
     if player["gold"] < st["gold_price"]:
         return {"ok": False, "msg": (
@@ -174,10 +210,11 @@ def buy_with_gold(user_id, key):
 
 
 def grant_from_stars(user_id, key):
-    """Выдать статус после оплаты Stars. Если уже был — просто переключаем."""
     if key not in STATUSES:
         return {"ok": False, "msg": "Такого статуса не существует."}
     st = STATUSES[key]
+    if st.get("exclusive"):
+        return {"ok": False, "msg": "Этот статус нельзя купить."}
     is_new = database.add_player_status(user_id, key)
     database.set_active_status(user_id, key)
     if is_new:
@@ -194,7 +231,6 @@ def grant_from_stars(user_id, key):
 
 
 def set_status(user_id, key):
-    """Надеть купленный статус."""
     if key not in STATUSES:
         return {"ok": False, "msg": "Статус не найден."}
     if not database.has_player_status(user_id, key):
@@ -204,7 +240,6 @@ def set_status(user_id, key):
 
 
 def clear_status(user_id):
-    """Снять статус (покупка остаётся)."""
     current = database.get_active_status(user_id)
     if not current:
         return {"ok": False, "msg": "У тебя и так нет активного статуса."}
@@ -213,7 +248,6 @@ def clear_status(user_id):
 
 
 def toggle_vip_badge(user_id):
-    """Скрыть/показать значок 💎. Покупка VIP не теряется."""
     if not database.has_vip(user_id):
         return {"ok": False, "msg": "У тебя нет активного VIP."}
     new_hidden = database.toggle_vip_badge(user_id)
@@ -228,6 +262,8 @@ def format_list(user_id):
     active = database.get_active_status(user_id)
     badge_hidden = database.is_vip_badge_hidden(user_id)
     has_vip = database.has_vip(user_id)
+
+    visible = get_visible_statuses(user_id)
 
     lines = [
         "🎭 <b>Статусы профиля</b>",
@@ -248,6 +284,9 @@ def format_list(user_id):
         lines.append(f"💎 Значок VIP: <b>{badge_state}</b>")
 
     lines.append("")
+    if len(visible) < len(STATUSES):
+        lines.append("<i>🎫 Эксклюзивы Боевого пропуска появятся здесь, когда ты их получишь.</i>")
+        lines.append("")
     lines.append("<i>Нажми на статус, чтобы посмотреть детали.</i>")
     return "\n".join(lines)
 
@@ -270,6 +309,8 @@ def format_detail(user_id, key):
         lines.append("✅ <b>Сейчас надет</b>")
     elif owned:
         lines.append("📖 <b>Уже куплен</b> — можно надеть")
+    elif st.get("exclusive"):
+        lines.append("🎫 <b>Эксклюзив Боевого пропуска</b> — не продаётся")
     else:
         lines.append(f"💰 Цена: <b>50⭐</b> или <b>{_fmt_spaced(st['gold_price'])}💠</b>")
     return "\n".join(lines)

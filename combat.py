@@ -21,7 +21,8 @@ min_level своей главы — тем выше броня (до BOSS_DEFENS
 Так максимально раскачанный игрок не ваншотит босса, но и не страдает.
 
 Боссы боевого клуба Хакари (boss_rush) идут БЕЗ уровневой брони —
-их реально ваншотнуть, это фича.
+их реально ваншотнуть, это фича. Победа/смерть/побег в забеге
+перехватываются boss_rush.on_rush_* хуками.
 """
 import random
 
@@ -57,10 +58,8 @@ CLASS_REWARD_MULT = {
 DEFEND_DAMAGE_MULT = 0.5
 DEFEND_CE_REGEN_MULT = 2.0
 
-# Штрафы за повторную активацию домена в одном бою (от текущего HP).
 DOMAIN_REACTIVATION_PENALTY = [0.0, 0.20, 0.50, 0.70]
 
-# Стоимость активации домена — доля от эффективного максимума ПЭ.
 DOMAIN_CE_COST_FRACTION = 0.60
 
 
@@ -145,7 +144,7 @@ DOMAIN_EFFECTS = {
 }
 
 
-def _find_domain_by_technique(technique_name: str) -> str | None:
+def _find_domain_by_technique(technique_name):
     """Ищет domain_key по имени мастер-техники."""
     for key, d in DOMAINS.items():
         if d["technique"] == technique_name:
@@ -153,14 +152,23 @@ def _find_domain_by_technique(technique_name: str) -> str | None:
     return None
 
 
-def _get_reactivation_penalty(uses_before: int) -> float:
+def _boss_rush_hook():
+    """Ленивая ссылка на boss_rush, чтобы не словить циклический импорт."""
+    try:
+        import boss_rush
+        return boss_rush
+    except ImportError:
+        return None
+
+
+def _get_reactivation_penalty(uses_before):
     """Штраф HP за активацию домена: 0 → 0.0, 1 → 0.20, 2 → 0.50, 3+ → 0.70."""
     if uses_before < len(DOMAIN_REACTIVATION_PENALTY):
         return DOMAIN_REACTIVATION_PENALTY[uses_before]
     return DOMAIN_REACTIVATION_PENALTY[-1]
 
 
-def _penalty_preview(user_id: int) -> tuple[int, float]:
+def _penalty_preview(user_id):
     """Возвращает (следующее_использование_№, штраф_доля) для UI."""
     used = database.get_domain_uses_in_battle(user_id)
     return (used + 1, _get_reactivation_penalty(used))
@@ -170,7 +178,7 @@ def _penalty_preview(user_id: int) -> tuple[int, float]:
 #  БРОНЯ БОССОВ С УРОВНЕВЫМ СКЕЙЛОМ
 # ============================================================
 
-def get_effective_boss_defense(user_id: int, encounter) -> float:
+def get_effective_boss_defense(user_id, encounter):
     """Процентная защита босса с уровнес-скейлом.
 
     Базовая defense задана в story.CHAPTERS[..]["temp_district"]["boss"]["defense"]
@@ -178,8 +186,8 @@ def get_effective_boss_defense(user_id: int, encounter) -> float:
     Если игрок выше min_level своей текущей главы — броня ползёт вверх
     (до BOSS_DEFENSE_CAP = 0.75).
 
-    Для боссов боевого клуба (monster_name с префиксом "[Клуб]") скейл
-    НЕ применяется — там защита всегда = 0, чтобы можно было ваншотнуть.
+    Для боссов боевого клуба (monster_name начинается с "[Клуб]")
+    скейл НЕ применяется — там защита всегда = 0, чтобы можно было ваншотнуть.
 
     Для обычных боссов из bosses.py (призыв ритуальной печатью) скейл
     тоже не применяется — это свободная охота.
@@ -191,14 +199,12 @@ def get_effective_boss_defense(user_id: int, encounter) -> float:
 
     monster_name = encounter["monster_name"]
 
-    # Боссы боевого клуба — без брони вообще
     if monster_name.startswith("[Клуб]"):
         return 0.0
 
     if base <= 0:
         return 0.0
 
-    # Ищем главу сюжета, в которой этот босс является финальным
     try:
         chapter_lvl = None
         for ch in story.CHAPTERS:
@@ -209,7 +215,7 @@ def get_effective_boss_defense(user_id: int, encounter) -> float:
                 break
 
         if chapter_lvl is None:
-            return base  # не сюжетный — без скейла
+            return base
 
         player = database.get_or_create_player(user_id, "")
         excess = max(0, player["level"] - chapter_lvl)
@@ -223,7 +229,7 @@ def get_effective_boss_defense(user_id: int, encounter) -> float:
 #  СКИЛЛЫ БОССОВ
 # ============================================================
 
-def _get_boss_skills(monster_name: str) -> dict | None:
+def _get_boss_skills(monster_name):
     """Возвращает конфиг скиллов/пассивок босса или None."""
     try:
         return story.BOSS_SKILLS.get(monster_name)
@@ -235,7 +241,7 @@ def _get_boss_skills(monster_name: str) -> dict | None:
 #  СЧЁТЧИК ИСПОЛЬЗОВАНИЙ (для разблокировки домена)
 # ============================================================
 
-def _register_domain_use(user_id: int, technique_name: str, log: list):
+def _register_domain_use(user_id, technique_name, log):
     """Считает использование мастер-техники. При достижении порога
     уведомляет о разблокировке. Сама активация — ручная."""
     technique = gacha.get_technique(technique_name)
@@ -258,7 +264,7 @@ def _register_domain_use(user_id: int, technique_name: str, log: list):
         log.append("🌌 В бою доступна кнопка «Использовать домен».")
 
 
-def player_has_unlocked_domain(user_id: int) -> bool:
+def player_has_unlocked_domain(user_id):
     equipped = gacha.get_equipped(user_id)
     for name in equipped:
         t = gacha.get_technique(name)
@@ -270,7 +276,7 @@ def player_has_unlocked_domain(user_id: int) -> bool:
     return False
 
 
-def get_unlocked_domain_technique(user_id: int) -> str | None:
+def get_unlocked_domain_technique(user_id):
     equipped = gacha.get_equipped(user_id)
     for name in equipped:
         t = gacha.get_technique(name)
@@ -282,7 +288,7 @@ def get_unlocked_domain_technique(user_id: int) -> str | None:
     return None
 
 
-def has_active_domain(user_id: int) -> bool:
+def has_active_domain(user_id):
     key, turns = database.get_domain(user_id)
     return bool(key and turns > 0)
 
@@ -291,7 +297,7 @@ def has_active_domain(user_id: int) -> bool:
 #  ПРОВЕРКА УСЛОВИЯ АКТИВАЦИИ
 # ============================================================
 
-def _parse_activation(activation: str) -> tuple[str, int] | None:
+def _parse_activation(activation):
     if not activation or activation == "always":
         return None
     parts = activation.rsplit("_", 1)
@@ -305,7 +311,7 @@ def _parse_activation(activation: str) -> tuple[str, int] | None:
     return (atype, n)
 
 
-def check_activation_condition(user_id: int) -> dict:
+def check_activation_condition(user_id):
     """Проверяет условие активации домена в текущем бою."""
     technique_name = get_unlocked_domain_technique(user_id)
     if not technique_name:
@@ -357,7 +363,7 @@ def check_activation_condition(user_id: int) -> dict:
 #  РУЧНАЯ АКТИВАЦИЯ ДОМЕНА
 # ============================================================
 
-def activate_domain_manual(user_id: int) -> dict:
+def activate_domain_manual(user_id):
     """Ручная активация домена кнопкой."""
     encounter = database.get_encounter(user_id)
     if not encounter:
@@ -474,7 +480,7 @@ def activate_domain_manual(user_id: int) -> dict:
     return {"ok": True, "log": log, "effect": "domain_activate"}
 
 
-def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
+def _process_domain_turn(user_id, player, encounter, log):
     """Обрабатывает эффекты домена в конце хода игрока.
     Возвращает True, если монстр умер от эффектов домена."""
     domain_key, turns = database.get_domain(user_id)
@@ -534,13 +540,13 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
 
 # ---------------- Формулы ----------------
 
-def _defense_reduction(user_id: int, player) -> float:
+def _defense_reduction(user_id, player):
     base = player["ce_control"] * DEFENSE_CE_COEF
     bonus = database.get_buff_value(user_id, "defense_bonus")
     return min(DEFENSE_CAP, base + bonus)
 
 
-def _ce_regen_amount(user_id: int, player) -> int:
+def _ce_regen_amount(user_id, player):
     base = CE_REGEN_BASE + player["ce_control"] * CE_REGEN_CE_COEF
     buff = database.get_buff_value(user_id, "ce_regen_bonus")
     if buff:
@@ -556,7 +562,7 @@ def _ce_regen_amount(user_id: int, player) -> int:
     return int(base)
 
 
-def _physical_damage(user_id: int, player) -> int:
+def _physical_damage(user_id, player):
     bonus_ce = int(player["ce_control"] * PHYS_CE_COEF)
     w = equipment.get_bonuses(user_id)
     lo = PLAYER_BASE_DMG_MIN + bonus_ce + w["dmg_min"]
@@ -581,7 +587,7 @@ def _physical_damage(user_id: int, player) -> int:
     return dmg
 
 
-def _technique_damage(user_id: int, player, technique: dict) -> int:
+def _technique_damage(user_id, player, technique):
     base = random.randint(technique["dmg_min"], technique["dmg_max"])
     coef = 1 + player["ce_control"] * TECH_CE_COEF
     w = equipment.get_bonuses(user_id)
@@ -602,7 +608,7 @@ def _technique_damage(user_id: int, player, technique: dict) -> int:
     return dmg
 
 
-def _black_flash_chance(user_id: int) -> float:
+def _black_flash_chance(user_id):
     eff = ce_types.get_effective_stats(user_id)
     if eff["max_ce"] <= 0:
         return 0.0
@@ -612,7 +618,7 @@ def _black_flash_chance(user_id: int) -> float:
     return min(0.75, PLAYER_CRIT_CHANCE + w["crit_bonus"] + buff + effects.get("crit_bonus", 0.0))
 
 
-def _regen_ce(user_id: int, player, mult: float = 1.0):
+def _regen_ce(user_id, player, mult=1.0):
     eff = ce_types.get_effective_stats(user_id, player)
     if eff["max_ce"] <= 0:
         return 0
@@ -624,7 +630,7 @@ def _regen_ce(user_id: int, player, mult: float = 1.0):
 
 # ---------------- Тексты ----------------
 
-def encounter_status_text(encounter) -> str:
+def encounter_status_text(encounter):
     hp = max(0, encounter["hp"])
     prefix = "👑 БОСС ОСОБОГО КЛАССА " if is_boss(encounter["monster_name"]) else ""
     class_emoji = CLASS_EMOJI.get(encounter["curse_class"] or encounter["rarity"], "")
@@ -651,7 +657,7 @@ def encounter_status_text(encounter) -> str:
     )
 
 
-def player_status_text(player, user_id: int | None = None) -> str:
+def player_status_text(player, user_id=None):
     if user_id:
         eff = ce_types.get_effective_stats(user_id, player)
     else:
@@ -683,7 +689,7 @@ def player_status_text(player, user_id: int | None = None) -> str:
 
 # ---------------- Дроп ----------------
 
-def _roll_drop(user_id: int, encounter):
+def _roll_drop(user_id, encounter):
     item_name = encounter["drop_item"]
     rarity = encounter["drop_rarity"]
     if not item_name or not rarity:
@@ -706,7 +712,7 @@ def _roll_drop(user_id: int, encounter):
 
 # ---------------- Эффекты техник ----------------
 
-def _apply_effect(user_id: int, encounter, effect: dict, log: list):
+def _apply_effect(user_id, encounter, effect, log):
     if not effect:
         return
     if random.random() > effect.get("chance", 1.0):
@@ -727,7 +733,7 @@ def _apply_effect(user_id: int, encounter, effect: dict, log: list):
 
 # ---------------- Победа/смерть ----------------
 
-def _story_tracking(user_id: int, encounter, log: list):
+def _story_tracking(user_id, encounter, log):
     in_temp = story.is_in_temp(user_id)
     temp = story.get_temp_district(user_id) if in_temp else None
 
@@ -749,7 +755,7 @@ def _story_tracking(user_id: int, encounter, log: list):
     story.add_progress(user_id, "kill_boss", target=encounter["monster_name"])
 
 
-def _find_story_boss(user_id: int, monster_name: str) -> dict | None:
+def _find_story_boss(user_id, monster_name):
     temp = story.get_temp_district(user_id)
     if not temp:
         return None
@@ -759,7 +765,11 @@ def _find_story_boss(user_id: int, monster_name: str) -> dict | None:
     return None
 
 
-def _victory(user_id: int, encounter, log: list) -> dict:
+def _victory(user_id, encounter, log):
+    br = _boss_rush_hook()
+    if br and br.is_rush_active(user_id):
+        return br.on_rush_boss_victory(user_id, encounter, log)
+
     database.clear_encounter(user_id)
     boss = BOSSES.get(encounter["monster_name"])
     story_boss = _find_story_boss(user_id, encounter["monster_name"]) if not boss else None
@@ -854,7 +864,11 @@ def _victory(user_id: int, encounter, log: list) -> dict:
     return {"status": "victory", "log": log, "effect": "victory"}
 
 
-def _death(user_id: int, player, log: list) -> dict:
+def _death(user_id, player, log):
+    br = _boss_rush_hook()
+    if br and br.is_rush_active(user_id):
+        return br.on_rush_player_death(user_id, player, log)
+
     eff = ce_types.get_effective_stats(user_id, player)
     respawn_hp = max(1, eff["max_hp"] // 2) if eff["max_hp"] > 0 else 1
     database.update_player_hp(user_id, respawn_hp)
@@ -872,9 +886,8 @@ def _death(user_id: int, player, log: list) -> dict:
 
 # ---------------- Ход проклятия ----------------
 
-def _compute_monster_hit(user_id: int, player, encounter, raw_dmg: int,
-                          damage_mult: float = 1.0, self_mult: float = 1.0,
-                          extra_mult: float = 1.0) -> int:
+def _compute_monster_hit(user_id, player, encounter, raw_dmg,
+                          damage_mult=1.0, self_mult=1.0, extra_mult=1.0):
     """Считает финальный урон монстра с учётом всех множителей."""
     reduction = _defense_reduction(user_id, player)
     effects = ce_types.get_active_effects(user_id)
@@ -890,8 +903,7 @@ def _compute_monster_hit(user_id: int, player, encounter, raw_dmg: int,
     return max(1, mdmg)
 
 
-def _apply_damage_to_player(user_id: int, player, log: list, mdmg: int,
-                             note: str = "") -> dict | None:
+def _apply_damage_to_player(user_id, player, log, mdmg, note=""):
     """Наносит урон игроку. Возвращает death-result или None."""
     new_hp = player["hp"] - mdmg
     if new_hp <= 0:
@@ -901,7 +913,7 @@ def _apply_damage_to_player(user_id: int, player, log: list, mdmg: int,
     return None
 
 
-def _try_passive(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+def _try_passive(user_id, player, encounter, skills, log):
     """Пытается применить пассивку босса. Возвращает death-result или None."""
     passive = skills.get("passive")
     if not passive:
@@ -952,7 +964,7 @@ def _try_passive(user_id: int, player, encounter, skills: dict, log: list) -> di
     return None
 
 
-def _try_execute(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+def _try_execute(user_id, player, encounter, skills, log):
     """Проверяет условие добивания. Возвращает death-result или None."""
     execute = skills.get("execute")
     if not execute:
@@ -972,7 +984,7 @@ def _try_execute(user_id: int, player, encounter, skills: dict, log: list) -> di
     return _apply_damage_to_player(user_id, player, log, mdmg)
 
 
-def _try_skill(user_id: int, player, encounter, skills: dict, log: list) -> dict | None:
+def _try_skill(user_id, player, encounter, skills, log):
     """Пробует применить активный скилл. Возвращает death-result или None."""
     skill_list = skills.get("skills") or []
     for skill in skill_list:
@@ -987,8 +999,8 @@ def _try_skill(user_id: int, player, encounter, skills: dict, log: list) -> dict
     return None
 
 
-def _curse_turn(user_id: int, player, encounter, log: list,
-                damage_mult: float = 1.0, self_mult: float = 1.0) -> dict | None:
+def _curse_turn(user_id, player, encounter, log,
+                damage_mult=1.0, self_mult=1.0):
     hp = encounter["hp"]
 
     if encounter["bleed_turns"] > 0:
@@ -1049,7 +1061,7 @@ def _curse_turn(user_id: int, player, encounter, log: list,
 
 # ---------------- Атака ----------------
 
-def attack(user_id: int, technique_name: str | None = None) -> dict:
+def attack(user_id, technique_name=None):
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"status": "no_encounter", "log": []}
@@ -1102,7 +1114,6 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
         if black_flash:
             database.add_charge(user_id, "black_flash", 1)
 
-    # Броня монстра (с уровневым скейлом для сюжетных боссов)
     defense = get_effective_boss_defense(user_id, encounter)
 
     if dmg > 0 and defense > 0:
@@ -1187,7 +1198,7 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
     return {"status": "ongoing", "log": log, "effect": effect_key}
 
 
-def defend(user_id: int) -> dict:
+def defend(user_id):
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"status": "no_encounter", "log": []}
@@ -1227,7 +1238,7 @@ def defend(user_id: int) -> dict:
     return {"status": "ongoing", "log": log, "effect": "defend"}
 
 
-def flee(user_id: int) -> dict:
+def flee(user_id):
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"status": "no_encounter", "log": []}
@@ -1237,6 +1248,9 @@ def flee(user_id: int) -> dict:
 
     flee_chance = FLEE_CHANCE * (0.5 if is_boss(encounter["monster_name"]) else 1.0)
     if random.random() < flee_chance:
+        br = _boss_rush_hook()
+        if br and br.is_rush_active(user_id):
+            return br.on_rush_flee(user_id, log)
         database.clear_encounter(user_id)
         quests.add_progress(user_id, "flee")
         log.append("🏃 Ты успешно скрылся при помощи техники усиления тела!")

@@ -20,6 +20,7 @@ import gacha
 import consumables
 import bosses
 import boss_rush
+import battle_pass
 import shop
 import quests
 import rest
@@ -244,6 +245,7 @@ def quests_menu_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Ежедневные", callback_data="quests_daily"),
          InlineKeyboardButton("📅 Недельные", callback_data="quests_weekly")],
+        [InlineKeyboardButton("🎫 Баттлпасс", callback_data="bp_menu")],
         [InlineKeyboardButton("⬅️ Назад", callback_data="back_to_game")],
     ])
 
@@ -564,7 +566,7 @@ def statuses_menu_keyboard(user_id):
     owned = set(database.get_player_statuses(user_id))
     active = database.get_active_status(user_id)
     rows = []
-    for key in statuses.STATUS_ORDER:
+    for key in statuses.get_visible_statuses(user_id):
         st = statuses.STATUSES[key]
         marks = []
         if key == active:
@@ -598,7 +600,7 @@ def status_detail_keyboard(user_id, key):
         rows.append([InlineKeyboardButton("❎ Снять", callback_data="status_clear")])
     elif owned:
         rows.append([InlineKeyboardButton("🎯 Надеть", callback_data=f"status_set:{key}")])
-    else:
+    elif not st.get("exclusive"):
         rows.append([InlineKeyboardButton(
             f"💰 Купить за {st['star_price']}⭐",
             callback_data=f"status_buy_stars:{key}",
@@ -902,6 +904,15 @@ def profile_text(user_id):
     active_status = database.get_active_status(user_id)
     if active_status and active_status in statuses.STATUSES:
         status_line = f"\n🎭 Статус: {statuses.STATUSES[active_status]['styled']}"
+
+    bp_line = ""
+    try:
+        bp_info = battle_pass.get_progress(user_id)
+        bp_prem = " 💎" if bp_info["premium"] else ""
+        bp_line = f"\n🎫 Баттлпасс: <b>{bp_info['level']}/50</b>{bp_prem}"
+    except Exception:
+        pass
+
     if database.has_vip(user_id):
         hidden = database.is_vip_badge_hidden(user_id)
         badge_note = " <i>(скрыт)</i>" if hidden else ""
@@ -920,7 +931,7 @@ def profile_text(user_id):
         f"{weapon_line}\n"
         f"🌀 Техник изучено: {len(learned)} · в бою: {len(equipped_tech)}/{config.MAX_EQUIPPED_TECHNIQUES}\n"
         f"⚔️ Оружия в коллекции: {len(weapons_owned)}"
-        f"{ce_line}{status_line}{rank_line}{buffs_line}{cap_line}{vip_line}"
+        f"{ce_line}{status_line}{bp_line}{rank_line}{buffs_line}{cap_line}{vip_line}"
     )
 
 
@@ -1177,7 +1188,8 @@ async def precheckout_handler(update, context):
     payload = query.invoice_payload
     if (payload == VIP_PAYLOAD
             or payload.startswith(DONATE_PAYLOAD_PREFIX)
-            or payload.startswith(STATUS_PAYLOAD_PREFIX)):
+            or payload.startswith(STATUS_PAYLOAD_PREFIX)
+            or payload.startswith(battle_pass.BP_PREMIUM_PAYLOAD_PREFIX)):
         await query.answer(ok=True)
     else:
         await query.answer(ok=False, error_message="Неизвестный платёж")
@@ -1230,6 +1242,24 @@ async def successful_payment_handler(update, context):
             res["msg"] + "\n\n<i>Спасибо за поддержку!</i>",
             reply_markup=kb_for(user_id),
         )
+        return
+    if payload.startswith(battle_pass.BP_PREMIUM_PAYLOAD_PREFIX):
+        is_new = battle_pass.grant_premium(user_id)
+        info = battle_pass.get_progress(user_id)
+        if is_new:
+            text = (
+                f"💎 <b>Премиум Баттлпасс активирован!</b>\n\n"
+                f"Сезон: <b>{info['season_id']}</b>\n"
+                f"Твой уровень: <b>{info['level']}/50</b>\n\n"
+                f"Теперь доступен премиум-трек с наградами ×3 — "
+                f"заходи в Задания → 🎫 Баттлпасс и забирай награды."
+            )
+        else:
+            text = (
+                f"💎 <b>Премиум Баттлпасс уже активен.</b>\n\n"
+                f"Спасибо за поддержку!"
+            )
+        await msg.reply_html(text, reply_markup=kb_for(user_id))
         return
 
 
@@ -1326,6 +1356,9 @@ async def status_buy_stars_handler(update, context, key):
     if not st:
         await query.message.reply_text("❌ Статус не найден.")
         return
+    if st.get("exclusive"):
+        await query.message.reply_text("❌ Этот статус нельзя купить.")
+        return
     if database.has_player_status(user_id, key):
         await query.message.reply_text(
             "✅ У тебя уже есть этот статус. Просто надень его.",
@@ -1381,6 +1414,81 @@ async def button_handler(update, context):
                      "<i>Хакари: «В клубе не жульничают. Никаких зелий, "
                      "никаких талисманов. Только ты и боссы.»</i>",
                      kb_for(user_id))
+        return
+
+    if data == "bp_menu":
+        text = battle_pass.format_battle_pass(user_id)
+        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id))
+        return
+
+    if data == "bp_levels":
+        text = battle_pass.format_levels_overview(user_id)
+        await render(query, context, text, battle_pass.bp_levels_keyboard(user_id))
+        return
+
+    if data.startswith("bp_level:"):
+        try:
+            lvl = int(data.split(":", 1)[1])
+        except ValueError:
+            lvl = 0
+        if lvl < 1 or lvl > battle_pass.BATTLE_PASS_LEVELS:
+            text = "❌ Некорректный уровень."
+            await render(query, context, text, battle_pass.bp_levels_keyboard(user_id))
+            return
+        text = battle_pass.format_level_detail(user_id, lvl)
+        await render(query, context, text, battle_pass.bp_level_detail_keyboard(user_id, lvl))
+        return
+
+    if data.startswith("bp_claim:"):
+        parts = data.split(":")
+        if len(parts) != 3:
+            return
+        try:
+            lvl = int(parts[1])
+        except ValueError:
+            return
+        tier = parts[2]
+        if tier not in ("free", "prem"):
+            return
+        res = battle_pass.claim_level(user_id, lvl, tier)
+        prefix = "✅ " if res["ok"] else "❌ "
+        text = prefix + res["msg"] + "\n\n" + battle_pass.format_level_detail(user_id, lvl)
+        await render(query, context, text, battle_pass.bp_level_detail_keyboard(user_id, lvl))
+        return
+
+    if data == "bp_claim_all":
+        res = battle_pass.claim_all(user_id)
+        prefix = "✅ " if res["ok"] else "ℹ️ "
+        text = prefix + res["msg"] + "\n\n" + battle_pass.format_battle_pass(user_id)
+        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id))
+        return
+
+    if data == "bp_buy_premium":
+        info = battle_pass.get_progress(user_id)
+        if info["premium"]:
+            await query.message.reply_text("💎 У тебя уже активен премиум-пропуск.")
+            return
+        try:
+            await context.bot.send_invoice(
+                chat_id=user_id,
+                title=f"Премиум Баттлпасс — Сезон {info['season_id']}",
+                description=(
+                    f"Премиум-трек на текущий сезон.\n"
+                    f"Награды ×3 от бесплатного трека, "
+                    f"эксклюзивные техники, статусы и предметы на всех "
+                    f"якорных уровнях."
+                ),
+                payload=f"{battle_pass.BP_PREMIUM_PAYLOAD_PREFIX}{info['season_id']}",
+                provider_token="",
+                currency="XTR",
+                prices=[LabeledPrice(
+                    f"Премиум БП — Сезон {info['season_id']}",
+                    battle_pass.BATTLE_PASS_PREMIUM_STARS,
+                )],
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось отправить инвойс БП: {e}")
+            await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
         return
 
     if data == "statuses_menu":
@@ -2237,7 +2345,8 @@ async def button_handler(update, context):
                 "📋 <b>Задания Ассоциации</b>\n\n"
                 "Ассоциация выдаёт 3 ежедневных и 3 недельных задания.\n"
                 "Прогресс считается автоматически, награду нужно забрать вручную.\n"
-                "💎 VIP даёт ×2 к наградам за задания.\n\n"
+                "💎 VIP даёт ×2 к наградам за задания.\n"
+                "🎫 За каждое забранное задание — BP-очки в Баттлпасс.\n\n"
                 "<i>Штаб: «Работай — и получишь своё.»</i>"
             )
         else:
@@ -2245,7 +2354,8 @@ async def button_handler(update, context):
                 "📋 <b>Задания Годжо</b>\n\n"
                 "Годжо выдаёт 3 ежедневных и 3 недельных задания.\n"
                 "Прогресс считается автоматически, награду нужно забрать вручную.\n"
-                "💎 VIP даёт ×2 к наградам за задания.\n\n"
+                "💎 VIP даёт ×2 к наградам за задания.\n"
+                "🎫 За каждое забранное задание — BP-очки в Баттлпасс.\n\n"
                 "<i>Годжо: «Работай — и я подкину тебе очков на крутки.»</i>"
             )
         await render(query, context, text, quests_menu_keyboard())
@@ -2784,6 +2894,10 @@ def main():
         boss_rush._ensure_tables()
     except Exception as e:
         logger.warning(f"Не удалось подготовить таблицы клуба: {e}")
+    try:
+        battle_pass._ensure_tables()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицы БП: {e}")
     migrate_curse_seals()
     app = Application.builder().token(config.BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))

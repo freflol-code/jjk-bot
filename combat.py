@@ -21,8 +21,10 @@ min_level своей главы — тем выше броня (до BOSS_DEFENS
 Так максимально раскачанный игрок не ваншотит босса, но и не страдает.
 
 Боссы боевого клуба Хакари (boss_rush) идут БЕЗ уровневой брони —
-их реально ваншотнуть, это фича. Победа/смерть/побег в забеге
-перехватываются boss_rush.on_rush_* хуками.
+их реально ваншотнуть, это фича. НО урон клубных боссов пробивает
+25% защиты игрока (CLUB_DEFENSE_PIERCE), чтобы бой не превращался
+в избиение. Победа/смерть/побег в забеге перехватываются
+boss_rush.on_rush_* хуками.
 """
 import random
 
@@ -61,6 +63,13 @@ DEFEND_CE_REGEN_MULT = 2.0
 DOMAIN_REACTIVATION_PENALTY = [0.0, 0.20, 0.50, 0.70]
 
 DOMAIN_CE_COST_FRACTION = 0.60
+
+# Пробитие защиты игрока боссами боевого клуба.
+# Итоговая защита игрока против клубного босса:
+#     reduction = max(0, min(DEFENSE_CAP, base) - CLUB_DEFENSE_PIERCE)
+# При DEFENSE_CAP = 0.65 и pierce = 0.40 игрок получает 25% защиты
+# вместо 65% — босс бьёт ощутимо.
+CLUB_DEFENSE_PIERCE = 0.40
 
 
 # ============================================================
@@ -888,8 +897,19 @@ def _death(user_id, player, log):
 
 def _compute_monster_hit(user_id, player, encounter, raw_dmg,
                           damage_mult=1.0, self_mult=1.0, extra_mult=1.0):
-    """Считает финальный урон монстра с учётом всех множителей."""
+    """Считает финальный урон монстра с учётом всех множителей.
+
+    Для боссов боевого клуба (monster_name начинается с "[Клуб]")
+    применяется пробитие защиты: броня игрока снижается на
+    CLUB_DEFENSE_PIERCE (40%). Так как DEFENSE_CAP = 0.65, эффективная
+    защита игрока от клубных боссов = 25%, а не 65%.
+    """
     reduction = _defense_reduction(user_id, player)
+
+    is_club_boss = encounter["monster_name"].startswith("[Клуб]")
+    if is_club_boss:
+        reduction = max(0.0, reduction - CLUB_DEFENSE_PIERCE)
+
     effects = ce_types.get_active_effects(user_id)
     defense_mult = effects.get("defense_mult", 1.0)
 

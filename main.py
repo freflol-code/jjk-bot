@@ -191,10 +191,11 @@ def main_keyboard(user_id):
             InlineKeyboardButton("🛡 Защита", callback_data="defend"),
             InlineKeyboardButton("🏃 Сбежать", callback_data="flee"),
         ])
-        rows.append([
-            InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory"),
-            InlineKeyboardButton("🗺 Карта", callback_data="map"),
-        ])
+        if boss_rush.is_rush_active(user_id):
+            rows.append([InlineKeyboardButton("🚫 Инвентарь (клуб)", callback_data="boss_rush_no_inventory")])
+        else:
+            rows.append([InlineKeyboardButton("🎒 Инвентарь", callback_data="inventory")])
+        rows.append([InlineKeyboardButton("🗺 Карта", callback_data="map")])
         return InlineKeyboardMarkup(rows)
     left_district = get_neighbor_district(player["x"], "left")
     right_district = get_neighbor_district(player["x"], "right")
@@ -1374,6 +1375,14 @@ async def button_handler(update, context):
     data = query.data
     done = []
 
+    if data == "boss_rush_no_inventory":
+        await render(query, context,
+                     "🚫 <b>Инвентарь заблокирован.</b>\n\n"
+                     "<i>Хакари: «В клубе не жульничают. Никаких зелий, "
+                     "никаких талисманов. Только ты и боссы.»</i>",
+                     kb_for(user_id))
+        return
+
     if data == "statuses_menu":
         text = statuses.format_list(user_id)
         await render(query, context, text, statuses_menu_keyboard(user_id))
@@ -1436,7 +1445,8 @@ async def button_handler(update, context):
         b = res["boss"]
         text = (
             f"🥊 <b>Забег начался!</b> (вход: {res['entry_cost']}💠)\n"
-            f"Босс <b>1/{res['total']}</b>: {b['emoji']} <b>{b['base_name']}</b>\n\n"
+            f"Босс <b>1/{res['total']}</b>: {b['emoji']} <b>{b['base_name']}</b>\n"
+            f"💔 HP и ПЭ восстановлены ОДИН РАЗ. Дальше — без пощады.\n\n"
             + combat.encounter_status_text(encounter) + "\n\n"
             + combat.player_status_text(fresh_player, user_id)
         )
@@ -1842,6 +1852,12 @@ async def button_handler(update, context):
             await send_effect_gif(context, query.message.chat_id, result["effect"])
 
     elif data == "inventory":
+        if boss_rush.is_rush_active(user_id):
+            await render(query, context,
+                         "🚫 <b>Инвентарь заблокирован.</b>\n\n"
+                         "<i>Хакари: «В клубе не жульничают. Никаких зелий.»</i>",
+                         kb_for(user_id))
+            return
         items = database.get_inventory(user_id)
         if not items:
             text = "🎒 Твой инвентарь пуст. Иди патрулировать!"
@@ -1858,6 +1874,12 @@ async def button_handler(update, context):
         await render(query, context, text, inventory_keyboard(user_id))
 
     elif data.startswith("use_item:"):
+        if boss_rush.is_rush_active(user_id):
+            await render(query, context,
+                         "🚫 <b>Расходники запрещены в Боевом клубе.</b>\n\n"
+                         "<i>Хакари: «Никаких зелий. Только ты и боссы.»</i>",
+                         kb_for(user_id))
+            return
         try:
             idx = int(data.split(":", 1)[1])
         except ValueError:
@@ -1895,6 +1917,11 @@ async def button_handler(update, context):
             await render(query, context, body, inventory_keyboard(user_id))
 
     elif data.startswith("summon_item:"):
+        if boss_rush.is_rush_active(user_id):
+            await render(query, context,
+                         "🚫 <b>Печати нельзя использовать в Боевом клубе.</b>",
+                         kb_for(user_id))
+            return
         try:
             idx = int(data.split(":", 1)[1])
         except ValueError:
@@ -2163,6 +2190,11 @@ async def button_handler(update, context):
 
     elif data == "profile_inventory":
         context.user_data["prev_screen"] = "profile"
+        if boss_rush.is_rush_active(user_id):
+            await render(query, context,
+                         "🚫 <b>Инвентарь заблокирован в Боевом клубе.</b>",
+                         profile_menu_keyboard(user_id))
+            return
         items = database.get_inventory(user_id)
         if not items:
             text = "🎒 Твой инвентарь пуст. Иди патрулировать!"

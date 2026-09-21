@@ -1163,7 +1163,10 @@ def _vip_description_text(user_id):
 async def vip_buy_handler(update, context):
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
     try:
         await context.bot.send_invoice(
             chat_id=user_id,
@@ -1266,7 +1269,10 @@ async def successful_payment_handler(update, context):
 async def vip_info_handler(update, context):
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
     is_active = database.has_vip(user_id)
     kb_rows = []
     if is_active:
@@ -1319,7 +1325,10 @@ def donate_menu_keyboard():
 async def donate_buy_handler(update, context, package_key):
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
     pkg = DONATE_PACKAGES.get(package_key)
     if not pkg:
         await query.message.reply_text("❌ Пакет не найден.")
@@ -1351,7 +1360,10 @@ async def donate_buy_handler(update, context, package_key):
 async def status_buy_stars_handler(update, context, key):
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest:
+        pass
     st = statuses.STATUSES.get(key)
     if not st:
         await query.message.reply_text("❌ Статус не найден.")
@@ -1380,10 +1392,18 @@ async def status_buy_stars_handler(update, context, key):
         await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
 
 
+async def global_error_handler(update, context):
+    logger.warning(f"Необработанное исключение: {context.error}")
+
+
 async def button_handler(update, context):
     query = update.callback_query
     user_id = query.from_user.id
-    await query.answer()
+    try:
+        await query.answer()
+    except BadRequest as e:
+        logger.info(f"query.answer() упал: {e}")
+
     player = database.get_or_create_player(user_id, query.from_user.username or query.from_user.first_name)
     x = player["x"]
     in_raid_now = raid.get_active_raid_for_user(user_id)
@@ -1416,14 +1436,22 @@ async def button_handler(update, context):
                      kb_for(user_id))
         return
 
+    # ================= BATTLE PASS =================
+
     if data == "bp_menu":
         text = battle_pass.format_battle_pass(user_id)
-        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id))
+        season_id = battle_pass.get_season_info()["id"]
+        image_path = assets.get_battle_pass_image(season_id)
+        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id),
+                     image_path=image_path)
         return
 
     if data == "bp_levels":
         text = battle_pass.format_levels_overview(user_id)
-        await render(query, context, text, battle_pass.bp_levels_keyboard(user_id))
+        season_id = battle_pass.get_season_info()["id"]
+        image_path = assets.get_battle_pass_image(season_id)
+        await render(query, context, text, battle_pass.bp_levels_keyboard(user_id),
+                     image_path=image_path)
         return
 
     if data.startswith("bp_level:"):
@@ -1436,7 +1464,13 @@ async def button_handler(update, context):
             await render(query, context, text, battle_pass.bp_levels_keyboard(user_id))
             return
         text = battle_pass.format_level_detail(user_id, lvl)
-        await render(query, context, text, battle_pass.bp_level_detail_keyboard(user_id, lvl))
+        image_path = assets.get_battle_pass_level_image(lvl)
+        if not image_path:
+            season_id = battle_pass.get_season_info()["id"]
+            image_path = assets.get_battle_pass_image(season_id)
+        await render(query, context, text,
+                     battle_pass.bp_level_detail_keyboard(user_id, lvl),
+                     image_path=image_path)
         return
 
     if data.startswith("bp_claim:"):
@@ -1453,14 +1487,23 @@ async def button_handler(update, context):
         res = battle_pass.claim_level(user_id, lvl, tier)
         prefix = "✅ " if res["ok"] else "❌ "
         text = prefix + res["msg"] + "\n\n" + battle_pass.format_level_detail(user_id, lvl)
-        await render(query, context, text, battle_pass.bp_level_detail_keyboard(user_id, lvl))
+        image_path = assets.get_battle_pass_level_image(lvl)
+        if not image_path:
+            season_id = battle_pass.get_season_info()["id"]
+            image_path = assets.get_battle_pass_image(season_id)
+        await render(query, context, text,
+                     battle_pass.bp_level_detail_keyboard(user_id, lvl),
+                     image_path=image_path)
         return
 
     if data == "bp_claim_all":
         res = battle_pass.claim_all(user_id)
         prefix = "✅ " if res["ok"] else "ℹ️ "
         text = prefix + res["msg"] + "\n\n" + battle_pass.format_battle_pass(user_id)
-        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id))
+        season_id = battle_pass.get_season_info()["id"]
+        image_path = assets.get_battle_pass_image(season_id)
+        await render(query, context, text, battle_pass.bp_menu_keyboard(user_id),
+                     image_path=image_path)
         return
 
     if data == "bp_buy_premium":
@@ -1490,6 +1533,8 @@ async def button_handler(update, context):
             logger.warning(f"Не удалось отправить инвойс БП: {e}")
             await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
         return
+
+    # ================= STATUSES =================
 
     if data == "statuses_menu":
         text = statuses.format_list(user_id)
@@ -1537,6 +1582,8 @@ async def button_handler(update, context):
         await render(query, context, text, statuses_menu_keyboard(user_id))
         return
 
+    # ================= BOSS RUSH =================
+
     if data == "boss_rush_menu":
         text = boss_rush.format_menu(user_id)
         await render(query, context, text, boss_rush.rush_menu_keyboard(user_id))
@@ -1582,6 +1629,8 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         return
+
+    # ================= RAID =================
 
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
@@ -1719,6 +1768,8 @@ async def button_handler(update, context):
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
 
+    # ================= DOMAIN =================
+
     if data == "domain_activate":
         result = combat.activate_domain_manual(user_id)
         encounter = database.get_encounter(user_id)
@@ -1802,6 +1853,8 @@ async def button_handler(update, context):
                 lines.append("<i>У тебя нет экипированных мастер-техник.</i>")
             await render(query, context, "\n".join(lines), kb_for(user_id))
         return
+
+    # ================= SUBWAY / MOVE / REST / PATROL =================
 
     if data == "subway_open":
         text = subway.format_subway_text(user_id)
@@ -1902,6 +1955,8 @@ async def button_handler(update, context):
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
+    # ================= БОЙ =================
+
     elif data == "attack" or data == "defend" or data == "flee" or data.startswith("tech:"):
         if data == "attack":
             result = combat.attack(user_id)
@@ -1958,6 +2013,8 @@ async def button_handler(update, context):
             await render(query, context, text, kb_for(user_id), image_path=district_image_for_x(fresh_player["x"]))
         if result.get("effect"):
             await send_effect_gif(context, query.message.chat_id, result["effect"])
+
+    # ================= ИНВЕНТАРЬ =================
 
     elif data == "inventory":
         if boss_rush.is_rush_active(user_id):
@@ -2057,6 +2114,8 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
+
+    # ================= КАРТА / СЮЖЕТ =================
 
     elif data == "map":
         text = "🗺 <b>Карта районов Токио</b>\n\n" + get_world_map_text(x)
@@ -2276,6 +2335,8 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
 
+    # ================= ПРОФИЛЬ / ДОНАТ / VIP =================
+
     elif data == "profile_menu":
         await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
 
@@ -2339,6 +2400,8 @@ async def button_handler(update, context):
         ])
         await render(query, context, text, keyboard)
 
+    # ================= ЗАДАНИЯ =================
+
     elif data == "quests_menu":
         if _gojo_is_sealed(user_id):
             text = (
@@ -2371,6 +2434,8 @@ async def button_handler(update, context):
         prefix = "✅ " if res["ok"] else "ℹ️ "
         text = prefix + res["msg"] + "\n\n" + quests.format_quests_text(user_id, period)
         await render(query, context, text, quests_period_keyboard(period))
+
+    # ================= ГАЧА =================
 
     elif data == "gacha_hub":
         await render(query, context,
@@ -2594,6 +2659,8 @@ async def button_handler(update, context):
         text = ("✅ " if result["ok"] else "❌ ") + result["msg"] + "\n\n" + gacha_menu_text(user_id)
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_rarity_keyboard(user_id, short), image_path=image_path)
+
+    # ================= НПС / МАГАЗИН / ОРУЖИЕ =================
 
     elif data.startswith("npc:"):
         npc_id = data.split(":", 1)[1]
@@ -2900,6 +2967,7 @@ def main():
         logger.warning(f"Не удалось подготовить таблицы БП: {e}")
     migrate_curse_seals()
     app = Application.builder().token(config.BOT_TOKEN).build()
+    app.add_error_handler(global_error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("map", map_command))
     app.add_handler(CommandHandler("inventory", inventory_command))

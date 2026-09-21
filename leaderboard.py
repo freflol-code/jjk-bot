@@ -8,18 +8,20 @@ leaderboard.py — доска лидеров «Сила шамана».
 чтобы сила отражала «потенциал» игрока и не падала от потери HP —
 поменяй в get_shaman_power hp на max_hp и ce на max_ce.
 
-Имена игроков показываются обычным текстом (без кликабельных ссылок
-на профиль) — в публичном боте это безопаснее.
+Имена игроков теперь декорируются статусами профиля и значком 💎
+(см. statuses.decorate_name). Значок 💎 можно скрыть в профиле —
+тогда он пропадёт и здесь.
 """
 import database
+import statuses
 
 
-def get_shaman_power(player_row) -> int:
+def get_shaman_power(player_row):
     """Сила шамана = ПЭ + HP * уровень. Работает с sqlite3.Row и dict."""
     return int(player_row["ce"] + player_row["hp"] * player_row["level"])
 
 
-def _all_players_with_power() -> list[dict]:
+def _all_players_with_power():
     """Список всех игроков с силой шамана, отсортированный по убыванию."""
     conn = database.get_conn()
     cur = conn.cursor()
@@ -44,7 +46,7 @@ def _all_players_with_power() -> list[dict]:
     return result
 
 
-def get_player_rank(user_id: int) -> dict:
+def get_player_rank(user_id):
     """{rank, power, total} для конкретного игрока. rank=None, если не найден."""
     all_players = _all_players_with_power()
     for i, p in enumerate(all_players, start=1):
@@ -56,12 +58,21 @@ def get_player_rank(user_id: int) -> dict:
 _MEDALS = {1: "🥇", 2: "🥈", 3: "🥉"}
 
 
-def _safe(name: str) -> str:
+def _safe(name):
     """Экранирует HTML-спецсимволы в имени игрока."""
     return name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def format_leaderboard(user_id: int, limit: int = 10) -> str:
+def _decorate(player_user_id, raw_name):
+    """Возвращает безопасно экранированное имя с префиксом статуса и 💎."""
+    try:
+        decorated = statuses.decorate_name(player_user_id, raw_name)
+    except Exception:
+        decorated = raw_name
+    return _safe(decorated)
+
+
+def format_leaderboard(user_id, limit=10):
     """HTML-текст доски лидеров. Текущий игрок подсвечивается 👈."""
     all_players = _all_players_with_power()
     if not all_players:
@@ -75,7 +86,7 @@ def format_leaderboard(user_id: int, limit: int = 10) -> str:
 
     for i, p in enumerate(shown, start=1):
         medal = _MEDALS.get(i, f"{i:>2}.")
-        name = _safe(p["username"])
+        name = _decorate(p["user_id"], p["username"])
         marker = " 👈" if p["user_id"] == user_id else ""
         lines.append(
             f"{medal} {name} — <b>{p['power']}</b> SP{marker}\n"

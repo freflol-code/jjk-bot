@@ -1,108 +1,50 @@
 """
-boss_rush.py — «Боевой клуб Хакари»: фарм-режим усиленных прошлых боссов.
+boss_rush.py — «Боевой клуб Хакари»: boss rush через всех пройденных боссов.
 
-Открывается после прохождения BOSS_RUSH_UNLOCK_CHAPTER глав сюжета.
-Хакари стоит в школе (X=0) и продаёт доступ к «спаррингам» с копиями
-боссов, которых игрок уже побеждал в сюжете.
+Формат:
+- Игрок платит за вход и бьётся с боссами ПОСЛЕДОВАТЕЛЬНО, один за другим.
+- Между боями HP и ПЭ полностью восстанавливаются.
+- Проиграл → забег закончился, получил накопленное.
+- Сбежал → забег закончился, потерял всё.
+- Прошёл всех → накопленное + 30% бонусом + легендарный трофей.
 
-Ключевые отличия от сюжетных боёв:
-- Босс усилен: HP ×2, урон ×1.3 (BOSS_RUSH_HP_MULT / DMG_MULT).
-- Броня у клубных боссов ВСЕГДА = 0 — их РЕАЛЬНО можно ваншотнуть.
-- Награда — 25% от сюжетной (BOSS_RUSH_REWARD_MULT).
-- Дропа предметов нет (это тренировка, а не охота).
-- Кулдаун между боями — BOSS_RUSH_COOLDOWN секунд.
-- Цена входа — BOSS_RUSH_ENTRY_COST 💠.
+Цена входа:
+    5000 💠 (первый босс) + 1000 💠 за каждого следующего.
+    Пример: 4 босса = 5000 + 1000×3 = 8000.
 
-Технически: все клубные боссы регистрируются в bosses.BOSSES
-с префиксом "[Клуб] " в имени. combat.get_effective_boss_defense()
-видит префикс и НЕ применяет уровневую защиту — поэтому ваншот реален.
+Награда за каждого убитого босса:
+    gold = boss.reward_gold + 3000
+    exp  = boss.reward_exp  + 1500
+    (× VIP-множитель, если VIP активен)
+
+Боссы в клубе: HP × 1.5, урон × 1.2, броня = 0 (можно ваншотнуть).
 """
+import json
 import time
 
 import database
 import story
-import bosses
-from config import (
-    BOSS_RUSH_UNLOCK_CHAPTER, BOSS_RUSH_ENTRY_COST, BOSS_RUSH_COOLDOWN,
-    BOSS_RUSH_HP_MULT, BOSS_RUSH_DMG_MULT, BOSS_RUSH_REWARD_MULT,
-)
+from config import BOSS_RUSH_UNLOCK_CHAPTER
 
 
 CLUB_PREFIX = "[Клуб] "
+BASE_ENTRY = 5000
+PER_BOSS_ENTRY = 1000
 
+BOSS_HP_MULT = 1.5
+BOSS_DMG_MULT = 1.2
 
-# ============================================================
-#  ПОСТРОЕНИЕ РЕЕСТРА КЛУБНЫХ БОССОВ
-# ============================================================
+REWARD_GOLD_FLAT = 3000
+REWARD_EXP_FLAT = 1500
 
-_club_bosses: dict[str, dict] = {}   # full_name -> {chapter_num, base_name, ...}
+FULL_CLEAR_GOLD_BONUS_MULT = 0.30
+FULL_CLEAR_EXP_BONUS_MULT = 0.30
+FULL_CLEAR_ITEM_NAME = "Осколок Боевого Клуба"
+FULL_CLEAR_ITEM_RARITY = "легендарный"
+FULL_CLEAR_ITEM_QTY = 1
 
+RUSH_COOLDOWN_SECONDS = 120
 
-def _build_club_bosses():
-    """Проходит по всем главам сюжета и делает из их боссов клубные версии.
-    Клубные версии получают префикс "[Клуб] " и усиленные статы."""
-    global _club_bosses
-    if _club_bosses:
-        return
-
-    for ch in story.CHAPTERS:
-        td = ch.get("temp_district") or {}
-        boss = td.get("boss")
-        if not boss:
-            continue
-
-        base_name = boss["name"]
-        full_name = CLUB_PREFIX + base_name
-
-        new_hp = int(boss["hp"] * BOSS_RUSH_HP_MULT)
-        new_dmg_min = int(boss["dmg_min"] * BOSS_RUSH_DMG_MULT)
-        new_dmg_max = int(boss["dmg_max"] * BOSS_RUSH_DMG_MULT)
-        new_gold = int(boss.get("reward_gold", 0) * BOSS_RUSH_REWARD_MULT)
-        new_exp = int(boss.get("reward_exp", 0) * BOSS_RUSH_REWARD_MULT)
-
-        _club_bosses[full_name] = {
-            "full_name": full_name,
-            "base_name": base_name,
-            "chapter_num": ch["num"],
-            "chapter_id": ch["id"],
-            "emoji": boss.get("emoji", "👹"),
-            "hp": new_hp,
-            "dmg_min": new_dmg_min,
-            "dmg_max": new_dmg_max,
-            "reward_gold": new_gold,
-            "reward_exp": new_exp,
-        }
-
-    # Регистрируем клубных боссов в bosses.BOSSES, чтобы combat._victory()
-    # нашёл их и начислил награду. drop_item не задаём — тренировка без дропа.
-    for full_name, b in _club_bosses.items():
-        bosses.BOSSES[full_name] = {
-            "emoji": b["emoji"],
-            "hp": b["hp"],
-            "dmg_min": b["dmg_min"],
-            "dmg_max": b["dmg_max"],
-            "rarity": "Особый класс",
-            "reward_gold": b["reward_gold"],
-            "reward_exp": b["reward_exp"],
-            "drop_item": None,
-        }
-
-    # Наследуем боевые пассивки/скиллы от сюжетных боссов.
-    # Ключи в story.BOSS_SKILLS совпадают с base_name, поэтому
-    # регистрируем под full_name тоже.
-    for full_name, b in _club_bosses.items():
-        base_skills = story.BOSS_SKILLS.get(b["base_name"])
-        if base_skills:
-            story.BOSS_SKILLS[full_name] = base_skills
-
-
-# Регистрируем сразу при импорте — combat.py ждёт записи в BOSSES.
-_build_club_bosses()
-
-
-# ============================================================
-#  БД: КУЛДАУНЫ
-# ============================================================
 
 _db_ready = False
 
@@ -113,8 +55,20 @@ def _ensure_tables():
         return
     conn = database.get_conn()
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS boss_rush_runs (
+            user_id          INTEGER PRIMARY KEY,
+            bosses_json      TEXT    NOT NULL,
+            current_idx      INTEGER NOT NULL DEFAULT 0,
+            accumulated_gold INTEGER NOT NULL DEFAULT 0,
+            accumulated_exp  INTEGER NOT NULL DEFAULT 0,
+            bosses_killed    INTEGER NOT NULL DEFAULT 0,
+            started_at       INTEGER NOT NULL,
+            status           TEXT    NOT NULL DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS boss_rush_cooldowns (
-            user_id    INTEGER NOT NULL PRIMARY KEY,
+            user_id    INTEGER PRIMARY KEY,
             expires_at INTEGER NOT NULL
         )
     """)
@@ -122,7 +76,50 @@ def _ensure_tables():
     _db_ready = True
 
 
-def _get_cooldown_until(user_id: int) -> int:
+# ============ ДОСТУП И ДАННЫЕ ============
+
+def is_unlocked(user_id):
+    return story.get_completed_chapters(user_id) >= BOSS_RUSH_UNLOCK_CHAPTER
+
+
+def _build_boss_list(user_id):
+    completed = story.get_completed_chapters(user_id)
+    result = []
+    for ch in story.CHAPTERS:
+        if ch["num"] > completed:
+            continue
+        td = ch.get("temp_district") or {}
+        boss = td.get("boss")
+        if not boss:
+            continue
+        result.append({
+            "chapter_num": ch["num"],
+            "chapter_id": ch["id"],
+            "base_name": boss["name"],
+            "emoji": boss.get("emoji", "👹"),
+            "hp": boss["hp"],
+            "dmg_min": boss["dmg_min"],
+            "dmg_max": boss["dmg_max"],
+            "reward_gold": boss.get("reward_gold", 0),
+            "reward_exp": boss.get("reward_exp", 0),
+        })
+    return result
+
+
+def get_boss_list(user_id):
+    return _build_boss_list(user_id)
+
+
+def entry_cost(user_id):
+    n = len(_build_boss_list(user_id))
+    if n <= 0:
+        return 0
+    return BASE_ENTRY + PER_BOSS_ENTRY * (n - 1)
+
+
+# ============ КУЛДАУН ============
+
+def get_cooldown_left(user_id):
     _ensure_tables()
     conn = database.get_conn()
     cur = conn.cursor()
@@ -134,12 +131,12 @@ def _get_cooldown_until(user_id: int) -> int:
         conn.execute("DELETE FROM boss_rush_cooldowns WHERE user_id = ?", (user_id,))
         conn.commit()
         return 0
-    return row["expires_at"]
+    return row["expires_at"] - int(time.time())
 
 
-def _set_cooldown(user_id: int):
+def _set_cooldown(user_id):
     _ensure_tables()
-    expires = int(time.time()) + BOSS_RUSH_COOLDOWN
+    expires = int(time.time()) + RUSH_COOLDOWN_SECONDS
     conn = database.get_conn()
     conn.execute(
         "INSERT INTO boss_rush_cooldowns (user_id, expires_at) VALUES (?, ?) "
@@ -149,125 +146,304 @@ def _set_cooldown(user_id: int):
     conn.commit()
 
 
-def get_cooldown_left(user_id: int) -> int:
-    until = _get_cooldown_until(user_id)
-    if until <= 0:
-        return 0
-    return max(0, until - int(time.time()))
-
-
-def format_cooldown(seconds: int) -> str:
-    m, s = divmod(seconds, 60)
+def format_cooldown(seconds):
+    m, s = divmod(int(seconds), 60)
     return f"{m}м {s:02d}с" if m else f"{s}с"
 
 
-# ============================================================
-#  ДОСТУП
-# ============================================================
+# ============ RUN STATE ============
 
-def is_unlocked(user_id: int) -> bool:
-    """Клуб открывается после прохождения N-й главы сюжета."""
-    return story.get_completed_chapters(user_id) >= BOSS_RUSH_UNLOCK_CHAPTER
-
-
-def get_available_bosses(user_id: int) -> list[dict]:
-    """Все боссы из глав, которые игрок уже прошёл.
-    Возвращает список словарей с индексом для callback_data."""
-    completed = story.get_completed_chapters(user_id)
-    result = []
-    for full_name, b in _club_bosses.items():
-        if b["chapter_num"] <= completed:
-            result.append({**b, "index": len(result)})
-    return result
+def _get_run(user_id):
+    _ensure_tables()
+    conn = database.get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM boss_rush_runs WHERE user_id = ?", (user_id,))
+    return cur.fetchone()
 
 
-def _find_boss_by_index(user_id: int, idx: int) -> dict | None:
-    """Ищет босса по его позиции в списке доступных."""
-    available = get_available_bosses(user_id)
-    if idx < 0 or idx >= len(available):
-        return None
-    return available[idx]
+def is_rush_active(user_id):
+    row = _get_run(user_id)
+    return bool(row and row["status"] == "active")
 
 
-# ============================================================
-#  ЗАПУСК БОЯ
-# ============================================================
+def _delete_run(user_id):
+    conn = database.get_conn()
+    conn.execute("DELETE FROM boss_rush_runs WHERE user_id = ?", (user_id,))
+    conn.commit()
 
-def start_battle(user_id: int, idx: int) -> dict:
-    """Списывает 💠, ставит encounter с клубным боссом, ставит КД."""
-    if not is_unlocked(user_id):
-        return {
-            "ok": False,
-            "msg": (
-                f"🔒 Клуб откроется после прохождения "
-                f"{BOSS_RUSH_UNLOCK_CHAPTER} глав сюжета."
-            ),
+
+def _update_run(user_id, current_idx, acc_gold, acc_exp, killed, status="active"):
+    conn = database.get_conn()
+    conn.execute(
+        "UPDATE boss_rush_runs SET current_idx = ?, accumulated_gold = ?, "
+        "accumulated_exp = ?, bosses_killed = ?, status = ? WHERE user_id = ?",
+        (current_idx, acc_gold, acc_exp, killed, status, user_id),
+    )
+    conn.commit()
+
+
+def _full_heal(user_id):
+    try:
+        import ce_types
+        player = database.get_or_create_player(user_id, "")
+        eff = ce_types.get_effective_stats(user_id, player)
+        database.update_player_hp(user_id, eff["max_hp"])
+        database.update_player_ce(user_id, eff["max_ce"])
+    except Exception:
+        pass
+
+
+def _freeze_bosses(user_id):
+    run = _get_run(user_id)
+    if not run:
+        return []
+    names = json.loads(run["bosses_json"])
+    by_name = {b["base_name"]: b for b in _build_boss_list(user_id)}
+    return [by_name[n] for n in names if n in by_name]
+
+
+# ============ СПАВН БОССА ============
+
+def _spawn_boss(user_id, boss_list, idx):
+    if idx < 0 or idx >= len(boss_list):
+        return {"ok": False, "msg": "Некорректный индекс босса."}
+    b = boss_list[idx]
+    full_name = f"{CLUB_PREFIX}[{idx + 1}/{len(boss_list)}] {b['base_name']}"
+
+    base_skills = story.BOSS_SKILLS.get(b["base_name"])
+    if base_skills:
+        story.BOSS_SKILLS[full_name] = base_skills
+
+    try:
+        import bosses
+        bosses.BOSSES[full_name] = {
+            "emoji": b["emoji"],
+            "hp": int(b["hp"] * BOSS_HP_MULT),
+            "dmg_min": int(b["dmg_min"] * BOSS_DMG_MULT),
+            "dmg_max": int(b["dmg_max"] * BOSS_DMG_MULT),
+            "rarity": "Особый класс",
+            "reward_gold": 0,
+            "reward_exp": 0,
+            "drop_item": None,
         }
+    except Exception:
+        pass
 
-    if database.get_encounter(user_id):
-        return {"ok": False, "msg": "Ты уже в бою! Сначала закончи текущий."}
-
-    if story.is_in_temp(user_id):
-        return {"ok": False, "msg": "Сначала покинь сюжетную локацию (⬅️ Вернуться в школу)."}
-
-    cd = get_cooldown_left(user_id)
-    if cd > 0:
-        return {
-            "ok": False,
-            "msg": f"⏳ Хакари не даст тебе драться так часто. Отдых: <b>{format_cooldown(cd)}</b>.",
-        }
-
-    boss = _find_boss_by_index(user_id, idx)
-    if not boss:
-        return {"ok": False, "msg": "Этот босс тебе ещё недоступен."}
-
-    player = database.get_or_create_player(user_id, "")
-    if player["gold"] < BOSS_RUSH_ENTRY_COST:
-        return {
-            "ok": False,
-            "msg": (
-                f"❌ Не хватает 💠 на вход. Нужно <b>{BOSS_RUSH_ENTRY_COST}</b>, "
-                f"у тебя <b>{player['gold']}</b>."
-            ),
-        }
-
-    database.add_gold(user_id, -BOSS_RUSH_ENTRY_COST)
+    new_hp = int(b["hp"] * BOSS_HP_MULT)
+    new_dmg_min = int(b["dmg_min"] * BOSS_DMG_MULT)
+    new_dmg_max = int(b["dmg_max"] * BOSS_DMG_MULT)
 
     monster = {
-        "name": boss["full_name"],
-        "hp": boss["hp"],
-        "dmg_min": boss["dmg_min"],
-        "dmg_max": boss["dmg_max"],
-        "emoji": boss["emoji"],
+        "name": full_name,
+        "hp": new_hp,
+        "dmg_min": new_dmg_min,
+        "dmg_max": new_dmg_max,
+        "emoji": b["emoji"],
         "rarity": "Особый класс",
         "curse_class": "Особый класс",
+        "defense": 0.0,
         "drop_item": None,
         "drop_rarity": None,
-        # ВАЖНО: defense = 0 → combat.get_effective_boss_defense() уже
-        # отсечёт скейл по префиксу "[Клуб] ", но на всякий случай.
-        "defense": 0.0,
     }
     database.set_encounter(user_id, "jujutsu_high", monster)
+    return {"ok": True, "stage": idx + 1, "total": len(boss_list), "boss": b}
+
+
+# ============ СТАРТ ЗАБЕГА ============
+
+def start_rush(user_id):
+    if not is_unlocked(user_id):
+        return {"ok": False, "msg": f"🔒 Клуб откроется после прохождения {BOSS_RUSH_UNLOCK_CHAPTER} глав сюжета."}
+    if database.get_encounter(user_id):
+        return {"ok": False, "msg": "Ты уже в бою! Сначала закончи текущий."}
+    if story.is_in_temp(user_id):
+        return {"ok": False, "msg": "Сначала покинь сюжетную локацию (⬅️ Вернуться в школу)."}
+    if is_rush_active(user_id):
+        return {"ok": False, "msg": "У тебя уже идёт забег."}
+    cd = get_cooldown_left(user_id)
+    if cd > 0:
+        return {"ok": False, "msg": f"⏳ Хакари не даст тебе драться так часто. Отдых: {format_cooldown(cd)}."}
+
+    boss_list = _build_boss_list(user_id)
+    if not boss_list:
+        return {"ok": False, "msg": "Пока ни одного босса не пройдено."}
+
+    cost = entry_cost(user_id)
+    player = database.get_or_create_player(user_id, "")
+    if player["gold"] < cost:
+        return {"ok": False, "msg": f"❌ Не хватает 💠 на вход. Нужно <b>{cost}</b>, у тебя <b>{player['gold']}</b>."}
+
+    database.add_gold(user_id, -cost)
     _set_cooldown(user_id)
+
+    _ensure_tables()
+    conn = database.get_conn()
+    conn.execute("DELETE FROM boss_rush_runs WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "INSERT INTO boss_rush_runs (user_id, bosses_json, current_idx, "
+        "accumulated_gold, accumulated_exp, bosses_killed, started_at, status) "
+        "VALUES (?, ?, 0, 0, 0, 0, ?, 'active')",
+        (user_id, json.dumps([b["base_name"] for b in boss_list]), int(time.time())),
+    )
+    conn.commit()
+
+    _full_heal(user_id)
+    spawn = _spawn_boss(user_id, boss_list, 0)
+    if not spawn["ok"]:
+        _delete_run(user_id)
+        return spawn
 
     return {
         "ok": True,
-        "msg": (
-            f"🥊 <b>Боевой клуб Хакари</b>\n\n"
-            f"{boss['emoji']} Против тебя выходит <b>{boss['base_name']}</b> "
-            f"(клубная версия).\n\n"
-            f"<i>Хакари: «Ставка сделана — не облажайся.»</i>"
-        ),
-        "boss": boss,
+        "entry_cost": cost,
+        "stage": 1,
+        "total": len(boss_list),
+        "boss": boss_list[0],
     }
 
 
-# ============================================================
-#  UI-ТЕКСТЫ
-# ============================================================
+# ============ ХУКИ ИЗ COMBAT ============
 
-def format_menu(user_id: int) -> str:
-    """Главный экран клуба."""
+def on_rush_boss_victory(user_id, encounter, log):
+    run = _get_run(user_id)
+    if not run:
+        database.clear_encounter(user_id)
+        return {"status": "victory", "log": log, "effect": "boss_victory"}
+
+    boss_list = _freeze_bosses(user_id)
+    idx = run["current_idx"]
+    killed = run["bosses_killed"] + 1
+    acc_gold = run["accumulated_gold"]
+    acc_exp = run["accumulated_exp"]
+
+    if 0 <= idx < len(boss_list):
+        b = boss_list[idx]
+        vip = database.vip_mult(user_id)
+        gold_add = int((b["reward_gold"] + REWARD_GOLD_FLAT) * vip)
+        exp_add = int((b["reward_exp"] + REWARD_EXP_FLAT) * vip)
+        acc_gold += gold_add
+        acc_exp += exp_add
+        log.append(f"\n🥊 <b>Босс {killed}/{len(boss_list)} повержен!</b>")
+        log.append(f"💰 +{gold_add}💠 · 🧬 +{exp_add} опыта")
+        log.append(f"📦 Накоплено: {acc_gold}💠 / {acc_exp}🧬")
+        if vip > 1:
+            log.append("💎 <i>VIP: награды ×2</i>")
+
+    database.clear_encounter(user_id)
+
+    next_idx = idx + 1
+    if next_idx < len(boss_list):
+        _update_run(user_id, next_idx, acc_gold, acc_exp, killed, "active")
+        _full_heal(user_id)
+        spawn = _spawn_boss(user_id, boss_list, next_idx)
+        if not spawn["ok"]:
+            return _finalize_rush(user_id, acc_gold, acc_exp, killed, log, full_clear=False)
+        nxt = boss_list[next_idx]
+        log.append(f"\n👉 Следующий: {nxt['emoji']} <b>{nxt['base_name']}</b>")
+        log.append("<i>HP и ПЭ восстановлены. Продолжай забег!</i>")
+        return {
+            "status": "ongoing",
+            "log": log,
+            "effect": "boss_victory",
+            "rush_continue": True,
+        }
+
+    return _finalize_rush(user_id, acc_gold, acc_exp, killed, log, full_clear=True)
+
+
+def on_rush_player_death(user_id, player, log):
+    run = _get_run(user_id)
+    if not run:
+        return {"status": "death", "log": log, "effect": "death"}
+
+    acc_gold = run["accumulated_gold"]
+    acc_exp = run["accumulated_exp"]
+    killed = run["bosses_killed"]
+
+    if acc_gold > 0:
+        database.add_gold(user_id, acc_gold)
+    if acc_exp > 0:
+        database.add_exp_and_level(user_id, acc_exp)
+
+    log.append(f"\n☠️ <b>Ты повержен в бою с боссом {killed + 1}.</b>")
+    log.append(f"📦 Награда за забег: 💠 +{acc_gold}, 🧬 +{acc_exp}")
+    log.append(f"🎯 Убито боссов: {killed}")
+
+    try:
+        import ce_types
+        eff = ce_types.get_effective_stats(user_id, player)
+        respawn_hp = max(1, eff["max_hp"] // 2) if eff["max_hp"] > 0 else 1
+        database.update_player_hp(user_id, respawn_hp)
+    except Exception:
+        pass
+    database.update_player_x(user_id, 0)
+    _delete_run(user_id)
+
+    return {"status": "death", "log": log, "effect": "death", "rush_finished": True}
+
+
+def on_rush_flee(user_id, log):
+    run = _get_run(user_id)
+    if not run:
+        database.clear_encounter(user_id)
+        return {"status": "fled", "log": log}
+
+    killed = run["bosses_killed"]
+    log.append("\n🏃 <b>Ты сбежал из боевого клуба!</b>")
+    log.append("💀 Хакари не любит трусов. Всё накопленное пропало.")
+    log.append(f"🎯 Убито боссов: {killed}")
+
+    database.clear_encounter(user_id)
+    _delete_run(user_id)
+
+    return {"status": "fled", "log": log, "rush_finished": True}
+
+
+def _finalize_rush(user_id, acc_gold, acc_exp, killed, log, full_clear=False):
+    bonus_gold = 0
+    bonus_exp = 0
+    if full_clear:
+        bonus_gold = int(acc_gold * FULL_CLEAR_GOLD_BONUS_MULT)
+        bonus_exp = int(acc_exp * FULL_CLEAR_EXP_BONUS_MULT)
+        acc_gold += bonus_gold
+        acc_exp += bonus_exp
+
+    if acc_gold > 0:
+        database.add_gold(user_id, acc_gold)
+    new_level = None
+    leveled = False
+    if acc_exp > 0:
+        new_level, leveled = database.add_exp_and_level(user_id, acc_exp)
+
+    if full_clear:
+        vip = database.vip_mult(user_id)
+        qty = FULL_CLEAR_ITEM_QTY * (2 if vip > 1.0 else 1)
+        database.add_item(user_id, FULL_CLEAR_ITEM_NAME, FULL_CLEAR_ITEM_RARITY, qty)
+
+    log.append("\n🏆 <b>ЗАБЕГ ЗАВЕРШЁН!</b>")
+    log.append(f"🎯 Убито боссов: {killed}")
+    log.append(f"💰 Итого: <b>{acc_gold}</b>💠 · 🧬 <b>{acc_exp}</b> опыта")
+    if full_clear:
+        log.append(f"✨ <b>Бонус за полное прохождение: +{bonus_gold}💠 / +{bonus_exp}🧬</b>")
+        log.append(f"🎁 Трофей: {FULL_CLEAR_ITEM_NAME} ×{FULL_CLEAR_ITEM_QTY}")
+
+    if leveled:
+        log.append(f"\n🎉 <b>Уровень повышен до {new_level}!</b>")
+
+    _delete_run(user_id)
+
+    return {
+        "status": "victory",
+        "log": log,
+        "effect": "boss_victory",
+        "rush_finished": True,
+        "rush_full_clear": full_clear,
+    }
+
+
+# ============ UI ============
+
+def format_menu(user_id):
     if not is_unlocked(user_id):
         completed = story.get_completed_chapters(user_id)
         return (
@@ -279,63 +455,75 @@ def format_menu(user_id: int) -> str:
         )
 
     player = database.get_or_create_player(user_id, "")
-    available = get_available_bosses(user_id)
+    boss_list = _build_boss_list(user_id)
+    n = len(boss_list)
+    cost = entry_cost(user_id)
     cd = get_cooldown_left(user_id)
+    active = is_rush_active(user_id)
 
     lines = [
         "🥊 <b>Боевой клуб Хакари</b>",
         "",
-        f"<i>Хакари: «Прошлые боссы? Ерунда. Я сделал их сильнее, "
-        f"но оставил без брони — если ты хорош, ваншотнешь.»</i>",
+        "<i>Хакари: «Boss rush через всех, кого ты уже побеждал. "
+        "Один забег без остановок. HP и ПЭ восстанавливаю между боями. "
+        "Проиграл — забег кончился, получил что успел. "
+        "Сбежал — ушёл ни с чем. Прошёл всех — большой бонус.»</i>",
         "",
-        f"💠 Вход: <b>{BOSS_RUSH_ENTRY_COST}</b> · "
-        f"награда: <b>{int(BOSS_RUSH_REWARD_MULT * 100)}%</b> от сюжетной",
-        f"⏱ Кулдаун: <b>{format_cooldown(BOSS_RUSH_COOLDOWN)}</b>",
+        f"💠 <b>Вход:</b> {cost} (за {n} боссов)",
+        f"⏱ Кулдаун между забегами: {format_cooldown(RUSH_COOLDOWN_SECONDS)}",
         f"💠 У тебя: <b>{player['gold']}</b>",
     ]
-
     if cd > 0:
-        lines.append(f"⏳ Следующий бой через: <b>{format_cooldown(cd)}</b>")
-
+        lines.append(f"⏳ Следующий забег через: <b>{format_cooldown(cd)}</b>")
     lines.append("")
-    lines.append("<b>Доступные противники:</b>")
-    if not available:
-        lines.append("<i>Пока никого — проходи сюжет.</i>")
-    else:
-        for b in available:
-            lines.append(
-                f"  {b['emoji']} <b>{b['base_name']}</b> "
-                f"(гл. {b['chapter_num']}) — "
-                f"❤️ {b['hp']} · 🗡 {b['dmg_min']}-{b['dmg_max']}"
-            )
+    lines.append("<b>В забеге:</b>")
+    for i, b in enumerate(boss_list, start=1):
+        lines.append(
+            f"  {i}. {b['emoji']} <b>{b['base_name']}</b> "
+            f"(гл. {b['chapter_num']}) — ❤️ {int(b['hp'] * BOSS_HP_MULT)}"
+        )
+    lines.append("")
+    lines.append("<b>Награды:</b>")
+    lines.append(f"  💰 За босса: его сюжетная + {REWARD_GOLD_FLAT}💠")
+    lines.append(f"  🧬 За босса: его сюжетная + {REWARD_EXP_FLAT}")
+    lines.append(f"  🏆 За полное прохождение: +{int(FULL_CLEAR_GOLD_BONUS_MULT * 100)}% и «{FULL_CLEAR_ITEM_NAME}»")
+    lines.append("")
+    if active:
+        run = _get_run(user_id)
+        idx = run["current_idx"]
+        lines.append(f"⚔️ <b>Активный забег:</b> босс {idx + 1}/{n} · убито {run['bosses_killed']}")
 
     return "\n".join(lines)
 
 
-def format_boss_detail(user_id: int, idx: int) -> str:
-    """Карточка одного босса — для экрана подтверждения."""
-    boss = _find_boss_by_index(user_id, idx)
-    if not boss:
-        return "❌ Этот босс тебе недоступен."
+def format_rush_progress(user_id):
+    run = _get_run(user_id)
+    if not run:
+        return ""
+    n = len(json.loads(run["bosses_json"]))
+    idx = run["current_idx"]
+    return (
+        f"🥊 <b>Боевой клуб:</b> босс {idx + 1}/{n} · "
+        f"убито {run['bosses_killed']} · "
+        f"накоплено {run['accumulated_gold']}💠 / {run['accumulated_exp']}🧬"
+    )
 
-    player = database.get_or_create_player(user_id, "")
-    cd = get_cooldown_left(user_id)
 
-    lines = [
-        f"{boss['emoji']} <b>{boss['base_name']}</b> — клубная версия",
-        f"<i>Глава {boss['chapter_num']} сюжета</i>",
-        "",
-        "⚙️ <b>Характеристики:</b>",
-        f"  ❤️ HP: <b>{boss['hp']}</b>",
-        f"  🗡 Урон: <b>{boss['dmg_min']}-{boss['dmg_max']}</b>",
-        f"  🛡 Броня: <b>0</b> (можно ваншотнуть!)",
-        "",
-        "🎁 <b>Награда за победу:</b>",
-        f"  💠 +{boss['reward_gold']} · 🧬 +{boss['reward_exp']}",
-        "",
-        f"💠 Вход: <b>{BOSS_RUSH_ENTRY_COST}</b> (у тебя {player['gold']})",
-    ]
-    if cd > 0:
-        lines.append(f"⏳ Кулдаун: <b>{format_cooldown(cd)}</b>")
-
-    return "\n".join(lines)
+def rush_menu_keyboard(user_id):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = []
+    if is_unlocked(user_id):
+        if is_rush_active(user_id):
+            rows.append([InlineKeyboardButton(
+                "▶️ Продолжить забег",
+                callback_data="boss_rush_continue",
+            )])
+        else:
+            cost = entry_cost(user_id)
+            if cost > 0:
+                rows.append([InlineKeyboardButton(
+                    f"🥊 Начать забег ({cost}💠)",
+                    callback_data="boss_rush_start",
+                )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="npc:hakari")])
+    return InlineKeyboardMarkup(rows)

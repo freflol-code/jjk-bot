@@ -5,9 +5,6 @@
 Схема бережно мигрируется: init_db() добавляет недостающие колонки
 и таблицы, ничего не удаляя. Существующие игроки, их золото/уровень/HP
 и инвентарь сохраняются при обновлении.
-
-Дополнительные модули могут лениво создавать свои таблицы
-(например, quests.py, rest.py, equipment.py, баффы), не задевая этот файл.
 """
 import sqlite3
 import time
@@ -24,8 +21,7 @@ def get_conn():
     return _conn
 
 
-def _ensure_column(conn, table: str, column: str, ddl: str):
-    """Добавляет колонку, если её ещё нет (безопасная миграция)."""
+def _ensure_column(conn, table, column, ddl):
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table})")
     existing = {row["name"] for row in cur.fetchall()}
@@ -90,14 +86,13 @@ def init_db():
         )
     """)
 
-    # --- Миграция players: новые статы Проклятой Энергии ---
     _ensure_column(conn, "players", "ce", f"ce INTEGER NOT NULL DEFAULT {MAX_CE_BASE}")
     _ensure_column(conn, "players", "max_ce", f"max_ce INTEGER NOT NULL DEFAULT {MAX_CE_BASE}")
     _ensure_column(conn, "players", "ce_control", f"ce_control INTEGER NOT NULL DEFAULT {CE_CONTROL_BASE}")
     _ensure_column(conn, "players", "dmg_buff_turns", "dmg_buff_turns INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "players", "dmg_buff_mult", "dmg_buff_mult REAL NOT NULL DEFAULT 1.0")
+    _ensure_column(conn, "players", "hide_vip_badge", "hide_vip_badge INTEGER NOT NULL DEFAULT 0")
 
-    # --- Миграция encounters: класс проклятия, дроп, эффекты, домен ---
     _ensure_column(conn, "encounters", "curse_class", "curse_class TEXT")
     _ensure_column(conn, "encounters", "drop_item", "drop_item TEXT")
     _ensure_column(conn, "encounters", "drop_rarity", "drop_rarity TEXT")
@@ -106,20 +101,14 @@ def init_db():
     _ensure_column(conn, "encounters", "bleed_dmg", "bleed_dmg INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "domain_key", "domain_key TEXT")
     _ensure_column(conn, "encounters", "domain_turns", "domain_turns INTEGER NOT NULL DEFAULT 0")
-
-    # --- Миграция encounters: счётчики заряда домена (условие активации) ---
     _ensure_column(conn, "encounters", "charge_dmg_dealt", "charge_dmg_dealt INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "charge_dmg_taken", "charge_dmg_taken INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "charge_tech_uses", "charge_tech_uses INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "encounters", "charge_black_flash", "charge_black_flash INTEGER NOT NULL DEFAULT 0")
-
-    # --- Миграция encounters: счётчик активаций домена в текущем бою ---
     _ensure_column(conn, "encounters", "domain_uses_in_battle", "domain_uses_in_battle INTEGER NOT NULL DEFAULT 0")
 
-    # --- Миграция player_techniques: счётчик использований для доменов ---
     _ensure_column(conn, "player_techniques", "uses", "uses INTEGER NOT NULL DEFAULT 0")
 
-    # --- Оружие ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_weapons (
             user_id     INTEGER NOT NULL,
@@ -134,8 +123,6 @@ def init_db():
             weapon_name TEXT NOT NULL
         )
     """)
-
-    # --- Баффы (реальное время) ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_buffs (
             user_id    INTEGER NOT NULL,
@@ -145,8 +132,6 @@ def init_db():
             PRIMARY KEY (user_id, stat)
         )
     """)
-
-    # --- Pity-система гачи и VIP ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_pity (
             user_id    INTEGER PRIMARY KEY,
@@ -159,8 +144,6 @@ def init_db():
             expires_at INTEGER NOT NULL DEFAULT 0
         )
     """)
-
-    # --- Типы ПЭ, кланы, Проклятия Небес ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_ce_types (
             user_id INTEGER NOT NULL,
@@ -202,12 +185,28 @@ def init_db():
         )
     """)
 
+    # --- Косметические статусы профиля ---
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS player_statuses (
+            user_id     INTEGER NOT NULL,
+            status_key  TEXT NOT NULL,
+            acquired_at INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, status_key)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_status (
+            user_id    INTEGER PRIMARY KEY,
+            status_key TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
 
 
 # ---------------- Игроки ----------------
 
-def get_or_create_player(user_id: int, username: str) -> sqlite3.Row:
+def get_or_create_player(user_id, username):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM players WHERE user_id = ?", (user_id,))
@@ -224,7 +223,7 @@ def get_or_create_player(user_id: int, username: str) -> sqlite3.Row:
     return row
 
 
-def update_player_x(user_id: int, new_x: int):
+def update_player_x(user_id, new_x):
     conn = get_conn()
     conn.execute("UPDATE players SET x = ? WHERE user_id = ?", (new_x, user_id))
     conn.commit()
@@ -237,25 +236,25 @@ def get_all_player_ids():
     return [row["user_id"] for row in cur.fetchall()]
 
 
-def add_gold(user_id: int, amount: int):
+def add_gold(user_id, amount):
     conn = get_conn()
     conn.execute("UPDATE players SET gold = gold + ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
 
 
-def update_player_hp(user_id: int, hp: int):
+def update_player_hp(user_id, hp):
     conn = get_conn()
     conn.execute("UPDATE players SET hp = ? WHERE user_id = ?", (hp, user_id))
     conn.commit()
 
 
-def update_player_ce(user_id: int, ce: int):
+def update_player_ce(user_id, ce):
     conn = get_conn()
     conn.execute("UPDATE players SET ce = ? WHERE user_id = ?", (ce, user_id))
     conn.commit()
 
 
-def set_player_dmg_buff(user_id: int, turns: int, mult: float):
+def set_player_dmg_buff(user_id, turns, mult):
     conn = get_conn()
     conn.execute(
         "UPDATE players SET dmg_buff_turns = ?, dmg_buff_mult = ? WHERE user_id = ?",
@@ -264,8 +263,7 @@ def set_player_dmg_buff(user_id: int, turns: int, mult: float):
     conn.commit()
 
 
-def consume_player_dmg_buff(user_id: int) -> float:
-    """Возвращает текущий множитель баффа урона и уменьшает его длительность на 1."""
+def consume_player_dmg_buff(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT dmg_buff_turns, dmg_buff_mult FROM players WHERE user_id = ?", (user_id,))
@@ -285,13 +283,7 @@ def consume_player_dmg_buff(user_id: int) -> float:
     return mult
 
 
-def add_exp_and_level(user_id: int, amount: int):
-    """
-    Начисляет опыт, при необходимости повышает уровень.
-    Растут HP, макс. ПЭ и Контроль ПЭ.
-    Уровень не может превысить потолок по сюжету: 20 + 20 * (глав пройдено).
-    Возвращает (новый_уровень, сколько_уровней_поднято).
-    """
+def add_exp_and_level(user_id, amount):
     from config import EXP_BASE, HP_PER_LEVEL, MAX_CE_PER_LEVEL, CE_CONTROL_PER_LEVEL
     conn = get_conn()
     cur = conn.cursor()
@@ -303,8 +295,8 @@ def add_exp_and_level(user_id: int, amount: int):
         cur.execute("SELECT chapter_idx, finished FROM player_story WHERE user_id = ?", (user_id,))
         sr = cur.fetchone()
         if sr:
-            completed = 6 if sr["finished"] else sr["chapter_idx"]
-            max_level = 20 + 20 * completed
+            completed = len(__import__("story").CHAPTERS) if sr["finished"] else sr["chapter_idx"]
+            max_level = 20 + 10 * completed
     except sqlite3.OperationalError:
         pass
 
@@ -337,7 +329,7 @@ def add_exp_and_level(user_id: int, amount: int):
 
 # ---------------- Инвентарь ----------------
 
-def add_item(user_id: int, item_name: str, rarity: str, quantity: int):
+def add_item(user_id, item_name, rarity, quantity):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -358,7 +350,7 @@ def add_item(user_id: int, item_name: str, rarity: str, quantity: int):
     conn.commit()
 
 
-def get_inventory(user_id: int):
+def get_inventory(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -368,9 +360,9 @@ def get_inventory(user_id: int):
     return cur.fetchall()
 
 
-# ---------------- Встречи с проклятиями ----------------
+# ---------------- Встречи ----------------
 
-def set_encounter(user_id: int, district_id: str, monster: dict):
+def set_encounter(user_id, district_id, monster):
     conn = get_conn()
     conn.execute("DELETE FROM encounters WHERE user_id = ?", (user_id,))
     conn.execute(
@@ -390,27 +382,26 @@ def set_encounter(user_id: int, district_id: str, monster: dict):
     conn.commit()
 
 
-def get_encounter(user_id: int):
+def get_encounter(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT * FROM encounters WHERE user_id = ?", (user_id,))
     return cur.fetchone()
 
 
-def clear_encounter(user_id: int):
+def clear_encounter(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM encounters WHERE user_id = ?", (user_id,))
     conn.commit()
 
 
-def update_encounter_hp(user_id: int, hp: int):
+def update_encounter_hp(user_id, hp):
     conn = get_conn()
     conn.execute("UPDATE encounters SET hp = ? WHERE user_id = ?", (hp, user_id))
     conn.commit()
 
 
-def set_encounter_status(user_id: int, stun_turns: int = None, bleed_turns: int = None, bleed_dmg: int = None):
-    """Частичное обновление статус-эффектов на проклятии (None = не менять)."""
+def set_encounter_status(user_id, stun_turns=None, bleed_turns=None, bleed_dmg=None):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT stun_turns, bleed_turns, bleed_dmg FROM encounters WHERE user_id = ?", (user_id,))
@@ -427,10 +418,9 @@ def set_encounter_status(user_id: int, stun_turns: int = None, bleed_turns: int 
     conn.commit()
 
 
-# ---------------- Расширения Территории (домены) ----------------
+# ---------------- Домены ----------------
 
-def set_domain(user_id: int, domain_key: str, turns: int):
-    """Активирует домен на N ходов у текущего encounter-а."""
+def set_domain(user_id, domain_key, turns):
     conn = get_conn()
     conn.execute(
         "UPDATE encounters SET domain_key = ?, domain_turns = ? WHERE user_id = ?",
@@ -439,8 +429,7 @@ def set_domain(user_id: int, domain_key: str, turns: int):
     conn.commit()
 
 
-def get_domain(user_id: int) -> tuple[str | None, int]:
-    """Возвращает (domain_key, turns). Если домен не активен — (None, 0)."""
+def get_domain(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT domain_key, domain_turns FROM encounters WHERE user_id = ?", (user_id,))
@@ -450,8 +439,7 @@ def get_domain(user_id: int) -> tuple[str | None, int]:
     return (row["domain_key"], row["domain_turns"] or 0)
 
 
-def decrement_domain(user_id: int) -> tuple[str | None, int]:
-    """Уменьшает счётчик ходов домена на 1. Возвращает новое состояние."""
+def decrement_domain(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT domain_key, domain_turns FROM encounters WHERE user_id = ?", (user_id,))
@@ -466,15 +454,12 @@ def decrement_domain(user_id: int) -> tuple[str | None, int]:
         )
         conn.commit()
         return (None, 0)
-    conn.execute(
-        "UPDATE encounters SET domain_turns = ? WHERE user_id = ?",
-        (new_turns, user_id),
-    )
+    conn.execute("UPDATE encounters SET domain_turns = ? WHERE user_id = ?", (new_turns, user_id))
     conn.commit()
     return (row["domain_key"], new_turns)
 
 
-def clear_domain(user_id: int):
+def clear_domain(user_id):
     conn = get_conn()
     conn.execute(
         "UPDATE encounters SET domain_key = NULL, domain_turns = 0 WHERE user_id = ?",
@@ -483,11 +468,7 @@ def clear_domain(user_id: int):
     conn.commit()
 
 
-# ---------------- Заряд домена (счётчики условия активации) ----------------
-
-def get_charges(user_id: int) -> dict:
-    """Возвращает текущие счётчики заряда в бою.
-    {dmg_dealt, dmg_taken, tech_uses, black_flash}. Все 0, если нет боя."""
+def get_charges(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -506,8 +487,7 @@ def get_charges(user_id: int) -> dict:
     }
 
 
-def add_charge(user_id: int, field: str, amount: int):
-    """Увеличивает нужный счётчик заряда. field: dmg_dealt / dmg_taken / tech_uses / black_flash."""
+def add_charge(user_id, field, amount):
     mapping = {
         "dmg_dealt": "charge_dmg_dealt",
         "dmg_taken": "charge_dmg_taken",
@@ -518,15 +498,11 @@ def add_charge(user_id: int, field: str, amount: int):
     if not col or amount <= 0:
         return
     conn = get_conn()
-    conn.execute(
-        f"UPDATE encounters SET {col} = {col} + ? WHERE user_id = ?",
-        (amount, user_id),
-    )
+    conn.execute(f"UPDATE encounters SET {col} = {col} + ? WHERE user_id = ?", (amount, user_id))
     conn.commit()
 
 
-def reset_charges(user_id: int):
-    """Обнуляет все счётчики заряда в текущем бою."""
+def reset_charges(user_id):
     conn = get_conn()
     conn.execute(
         "UPDATE encounters SET charge_dmg_dealt = 0, charge_dmg_taken = 0, "
@@ -536,39 +512,29 @@ def reset_charges(user_id: int):
     conn.commit()
 
 
-# ---------------- Счётчик активаций домена в бою ----------------
-
-def get_domain_uses_in_battle(user_id: int) -> int:
-    """Сколько раз игрок активировал домен в текущем бою.
-    0 — если боя нет."""
+def get_domain_uses_in_battle(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT domain_uses_in_battle FROM encounters WHERE user_id = ?",
-        (user_id,),
-    )
+    cur.execute("SELECT domain_uses_in_battle FROM encounters WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     if not row:
         return 0
     return row["domain_uses_in_battle"] or 0
 
 
-def inc_domain_uses_in_battle(user_id: int) -> int:
-    """Увеличивает счётчик активаций домена в текущем бою на 1.
-    Возвращает НОВОЕ значение."""
+def inc_domain_uses_in_battle(user_id):
     conn = get_conn()
     conn.execute(
-        "UPDATE encounters SET domain_uses_in_battle = domain_uses_in_battle + 1 "
-        "WHERE user_id = ?",
+        "UPDATE encounters SET domain_uses_in_battle = domain_uses_in_battle + 1 WHERE user_id = ?",
         (user_id,),
     )
     conn.commit()
     return get_domain_uses_in_battle(user_id)
 
 
-# ---------------- Врождённые техники ----------------
+# ---------------- Техники ----------------
 
-def add_player_technique(user_id: int, technique_name: str, rarity: str) -> bool:
+def add_player_technique(user_id, technique_name, rarity):
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -582,7 +548,7 @@ def add_player_technique(user_id: int, technique_name: str, rarity: str) -> bool
         return False
 
 
-def get_player_techniques(user_id: int):
+def get_player_techniques(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -592,7 +558,7 @@ def get_player_techniques(user_id: int):
     return cur.fetchall()
 
 
-def has_technique(user_id: int, technique_name: str) -> bool:
+def has_technique(user_id, technique_name):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -602,11 +568,10 @@ def has_technique(user_id: int, technique_name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def inc_technique_uses(user_id: int, technique_name: str) -> int:
+def inc_technique_uses(user_id, technique_name):
     conn = get_conn()
     conn.execute(
-        "UPDATE player_techniques SET uses = uses + 1 "
-        "WHERE user_id = ? AND technique_name = ?",
+        "UPDATE player_techniques SET uses = uses + 1 WHERE user_id = ? AND technique_name = ?",
         (user_id, technique_name),
     )
     conn.commit()
@@ -619,7 +584,7 @@ def inc_technique_uses(user_id: int, technique_name: str) -> int:
     return row["uses"] if row else 0
 
 
-def get_technique_uses(user_id: int, technique_name: str) -> int:
+def get_technique_uses(user_id, technique_name):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -630,7 +595,7 @@ def get_technique_uses(user_id: int, technique_name: str) -> int:
     return row["uses"] if row else 0
 
 
-def get_equipped_techniques(user_id: int):
+def get_equipped_techniques(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -640,7 +605,7 @@ def get_equipped_techniques(user_id: int):
     return cur.fetchall()
 
 
-def equip_technique(user_id: int, slot: int, technique_name: str):
+def equip_technique(user_id, slot, technique_name):
     conn = get_conn()
     conn.execute(
         "INSERT INTO equipped_techniques (user_id, slot, technique_name) VALUES (?, ?, ?) "
@@ -650,15 +615,15 @@ def equip_technique(user_id: int, slot: int, technique_name: str):
     conn.commit()
 
 
-def unequip_technique(user_id: int, slot: int):
+def unequip_technique(user_id, slot):
     conn = get_conn()
     conn.execute("DELETE FROM equipped_techniques WHERE user_id = ? AND slot = ?", (user_id, slot))
     conn.commit()
 
 
-# ---------------- Инвентарь: подсчёт и списание ----------------
+# ---------------- Инвентарь: подсчёт ----------------
 
-def count_item(user_id: int, item_name: str) -> int:
+def count_item(user_id, item_name):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -668,7 +633,7 @@ def count_item(user_id: int, item_name: str) -> int:
     return cur.fetchone()["total"]
 
 
-def consume_item(user_id: int, item_name: str, quantity: int):
+def consume_item(user_id, item_name, quantity):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -691,11 +656,9 @@ def consume_item(user_id: int, item_name: str, quantity: int):
     conn.commit()
 
 
-# ============================================================
-#  ОРУЖИЕ
-# ============================================================
+# ---------------- Оружие ----------------
 
-def add_player_weapon(user_id: int, weapon_name: str):
+def add_player_weapon(user_id, weapon_name):
     conn = get_conn()
     conn.execute(
         "INSERT OR IGNORE INTO player_weapons (user_id, weapon_name, acquired_at) "
@@ -705,7 +668,7 @@ def add_player_weapon(user_id: int, weapon_name: str):
     conn.commit()
 
 
-def has_weapon(user_id: int, weapon_name: str) -> bool:
+def has_weapon(user_id, weapon_name):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -715,7 +678,7 @@ def has_weapon(user_id: int, weapon_name: str) -> bool:
     return cur.fetchone() is not None
 
 
-def get_player_weapons(user_id: int) -> list[str]:
+def get_player_weapons(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -725,7 +688,7 @@ def get_player_weapons(user_id: int) -> list[str]:
     return [row["weapon_name"] for row in cur.fetchall()]
 
 
-def set_equipped_weapon(user_id: int, weapon_name: str):
+def set_equipped_weapon(user_id, weapon_name):
     conn = get_conn()
     conn.execute(
         "INSERT INTO equipped_weapon (user_id, weapon_name) VALUES (?, ?) "
@@ -735,13 +698,13 @@ def set_equipped_weapon(user_id: int, weapon_name: str):
     conn.commit()
 
 
-def clear_equipped_weapon(user_id: int):
+def clear_equipped_weapon(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM equipped_weapon WHERE user_id = ?", (user_id,))
     conn.commit()
 
 
-def get_equipped_weapon_name(user_id: int) -> str | None:
+def get_equipped_weapon_name(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT weapon_name FROM equipped_weapon WHERE user_id = ?", (user_id,))
@@ -749,11 +712,9 @@ def get_equipped_weapon_name(user_id: int) -> str | None:
     return row["weapon_name"] if row else None
 
 
-# ============================================================
-#  БАФФЫ
-# ============================================================
+# ---------------- Баффы ----------------
 
-def add_player_buff(user_id: int, stat: str, value: float, duration_seconds: int):
+def add_player_buff(user_id, stat, value, duration_seconds):
     conn = get_conn()
     expires_at = int(time.time()) + duration_seconds
     conn.execute(
@@ -765,13 +726,10 @@ def add_player_buff(user_id: int, stat: str, value: float, duration_seconds: int
     conn.commit()
 
 
-def get_active_buffs(user_id: int) -> list[dict]:
+def get_active_buffs(user_id):
     conn = get_conn()
     now = int(time.time())
-    conn.execute(
-        "DELETE FROM player_buffs WHERE user_id = ? AND expires_at <= ?",
-        (user_id, now),
-    )
+    conn.execute("DELETE FROM player_buffs WHERE user_id = ? AND expires_at <= ?", (user_id, now))
     conn.commit()
     cur = conn.cursor()
     cur.execute(
@@ -785,14 +743,14 @@ def get_active_buffs(user_id: int) -> list[dict]:
     ]
 
 
-def get_buff_value(user_id: int, stat: str) -> float:
+def get_buff_value(user_id, stat):
     for b in get_active_buffs(user_id):
         if b["stat"] == stat:
             return b["value"]
     return 0.0
 
 
-def clear_expired_buffs() -> int:
+def clear_expired_buffs():
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
@@ -801,11 +759,9 @@ def clear_expired_buffs() -> int:
     return cur.rowcount
 
 
-# ============================================================
-#  PITY-СИСТЕМА ГАЧИ
-# ============================================================
+# ---------------- Pity ----------------
 
-def get_pity(user_id: int) -> int:
+def get_pity(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT pity_count FROM player_pity WHERE user_id = ?", (user_id,))
@@ -813,7 +769,7 @@ def get_pity(user_id: int) -> int:
     return row["pity_count"] if row else 0
 
 
-def inc_pity(user_id: int) -> int:
+def inc_pity(user_id):
     conn = get_conn()
     conn.execute(
         "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 1) "
@@ -824,7 +780,7 @@ def inc_pity(user_id: int) -> int:
     return get_pity(user_id)
 
 
-def reset_pity(user_id: int):
+def reset_pity(user_id):
     conn = get_conn()
     conn.execute(
         "INSERT INTO player_pity (user_id, pity_count) VALUES (?, 0) "
@@ -834,11 +790,9 @@ def reset_pity(user_id: int):
     conn.commit()
 
 
-# ============================================================
-#  VIP
-# ============================================================
+# ---------------- VIP ----------------
 
-def get_vip_until(user_id: int) -> int:
+def get_vip_until(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT expires_at FROM player_vip WHERE user_id = ?", (user_id,))
@@ -850,15 +804,15 @@ def get_vip_until(user_id: int) -> int:
     return row["expires_at"]
 
 
-def has_vip(user_id: int) -> bool:
+def has_vip(user_id):
     return get_vip_until(user_id) > 0
 
 
-def vip_mult(user_id: int) -> float:
+def vip_mult(user_id):
     return 2.0 if has_vip(user_id) else 1.0
 
 
-def add_vip_days(user_id: int, days: int):
+def add_vip_days(user_id, days):
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
@@ -874,11 +828,41 @@ def add_vip_days(user_id: int, days: int):
     conn.commit()
 
 
-# ============================================================
-#  ТИПЫ ПЭ
-# ============================================================
+# ---------------- Значок VIP ----------------
 
-def add_ce_type(user_id: int, ce_key: str, rarity: str) -> bool:
+def is_vip_badge_hidden(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT hide_vip_badge FROM players WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    try:
+        return bool(row["hide_vip_badge"])
+    except (IndexError, KeyError):
+        return False
+
+
+def set_vip_badge_hidden(user_id, hidden):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE players SET hide_vip_badge = ? WHERE user_id = ?",
+        (1 if hidden else 0, user_id),
+    )
+    conn.commit()
+
+
+def toggle_vip_badge(user_id):
+    """Возвращает НОВОЕ состояние (True = скрыт)."""
+    current = is_vip_badge_hidden(user_id)
+    new_state = not current
+    set_vip_badge_hidden(user_id, new_state)
+    return new_state
+
+
+# ---------------- Типы ПЭ ----------------
+
+def add_ce_type(user_id, ce_key, rarity):
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -892,7 +876,7 @@ def add_ce_type(user_id: int, ce_key: str, rarity: str) -> bool:
         return False
 
 
-def get_ce_types(user_id: int):
+def get_ce_types(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -902,7 +886,7 @@ def get_ce_types(user_id: int):
     return cur.fetchall()
 
 
-def has_ce_type(user_id: int, ce_key: str) -> bool:
+def has_ce_type(user_id, ce_key):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -912,7 +896,7 @@ def has_ce_type(user_id: int, ce_key: str) -> bool:
     return cur.fetchone() is not None
 
 
-def set_active_ce_type(user_id: int, ce_key: str):
+def set_active_ce_type(user_id, ce_key):
     conn = get_conn()
     conn.execute(
         "INSERT INTO active_ce_type (user_id, ce_key) VALUES (?, ?) "
@@ -922,13 +906,13 @@ def set_active_ce_type(user_id: int, ce_key: str):
     conn.commit()
 
 
-def clear_active_ce_type(user_id: int):
+def clear_active_ce_type(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM active_ce_type WHERE user_id = ?", (user_id,))
     conn.commit()
 
 
-def get_active_ce_type(user_id: int) -> str | None:
+def get_active_ce_type(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT ce_key FROM active_ce_type WHERE user_id = ?", (user_id,))
@@ -936,35 +920,27 @@ def get_active_ce_type(user_id: int) -> str | None:
     return row["ce_key"] if row else None
 
 
-# ============================================================
-#  КЛАНЫ
-# ============================================================
+# ---------------- Кланы ----------------
 
-def add_clan(user_id: int, clan_key: str) -> bool:
+def add_clan(user_id, clan_key):
     conn = get_conn()
     cur = conn.cursor()
     try:
-        cur.execute(
-            "INSERT INTO player_clans (user_id, clan_key) VALUES (?, ?)",
-            (user_id, clan_key),
-        )
+        cur.execute("INSERT INTO player_clans (user_id, clan_key) VALUES (?, ?)", (user_id, clan_key))
         conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
 
 
-def get_clans(user_id: int):
+def get_clans(user_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute(
-        "SELECT clan_key FROM player_clans WHERE user_id = ? ORDER BY clan_key",
-        (user_id,),
-    )
+    cur.execute("SELECT clan_key FROM player_clans WHERE user_id = ? ORDER BY clan_key", (user_id,))
     return cur.fetchall()
 
 
-def has_clan(user_id: int, clan_key: str) -> bool:
+def has_clan(user_id, clan_key):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -974,7 +950,7 @@ def has_clan(user_id: int, clan_key: str) -> bool:
     return cur.fetchone() is not None
 
 
-def set_active_clan(user_id: int, clan_key: str):
+def set_active_clan(user_id, clan_key):
     conn = get_conn()
     conn.execute(
         "INSERT INTO active_clan (user_id, clan_key) VALUES (?, ?) "
@@ -984,13 +960,13 @@ def set_active_clan(user_id: int, clan_key: str):
     conn.commit()
 
 
-def clear_active_clan(user_id: int):
+def clear_active_clan(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM active_clan WHERE user_id = ?", (user_id,))
     conn.commit()
 
 
-def get_active_clan(user_id: int) -> str | None:
+def get_active_clan(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT clan_key FROM active_clan WHERE user_id = ?", (user_id,))
@@ -998,11 +974,9 @@ def get_active_clan(user_id: int) -> str | None:
     return row["clan_key"] if row else None
 
 
-# ============================================================
-#  ПРОКЛЯТИЯ НЕБЕС
-# ============================================================
+# ---------------- Проклятия Небес ----------------
 
-def add_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
+def add_heavenly_restriction(user_id, heavenly_key):
     conn = get_conn()
     cur = conn.cursor()
     try:
@@ -1016,7 +990,7 @@ def add_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
         return False
 
 
-def get_heavenly_restrictions(user_id: int):
+def get_heavenly_restrictions(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -1026,7 +1000,7 @@ def get_heavenly_restrictions(user_id: int):
     return cur.fetchall()
 
 
-def has_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
+def has_heavenly_restriction(user_id, heavenly_key):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute(
@@ -1036,7 +1010,7 @@ def has_heavenly_restriction(user_id: int, heavenly_key: str) -> bool:
     return cur.fetchone() is not None
 
 
-def set_active_heavenly(user_id: int, heavenly_key: str):
+def set_active_heavenly(user_id, heavenly_key):
     conn = get_conn()
     conn.execute(
         "INSERT INTO active_heavenly (user_id, heavenly_key) VALUES (?, ?) "
@@ -1046,15 +1020,78 @@ def set_active_heavenly(user_id: int, heavenly_key: str):
     conn.commit()
 
 
-def clear_active_heavenly(user_id: int):
+def clear_active_heavenly(user_id):
     conn = get_conn()
     conn.execute("DELETE FROM active_heavenly WHERE user_id = ?", (user_id,))
     conn.commit()
 
 
-def get_active_heavenly(user_id: int) -> str | None:
+def get_active_heavenly(user_id):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT heavenly_key FROM active_heavenly WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     return row["heavenly_key"] if row else None
+
+
+# ============================================================
+#  КОСМЕТИЧЕСКИЕ СТАТУСЫ ПРОФИЛЯ
+# ============================================================
+
+def add_player_status(user_id, status_key):
+    """Возвращает True, если статус новый (только что куплен)."""
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "INSERT INTO player_statuses (user_id, status_key, acquired_at) VALUES (?, ?, ?)",
+            (user_id, status_key, int(time.time())),
+        )
+        conn.commit()
+        return True
+    except sqlite3.IntegrityError:
+        return False
+
+
+def has_player_status(user_id, status_key):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT 1 FROM player_statuses WHERE user_id = ? AND status_key = ?",
+        (user_id, status_key),
+    )
+    return cur.fetchone() is not None
+
+
+def get_player_statuses(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT status_key FROM player_statuses WHERE user_id = ? ORDER BY acquired_at",
+        (user_id,),
+    )
+    return [row["status_key"] for row in cur.fetchall()]
+
+
+def set_active_status(user_id, status_key):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO active_status (user_id, status_key) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET status_key = excluded.status_key",
+        (user_id, status_key),
+    )
+    conn.commit()
+
+
+def clear_active_status(user_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM active_status WHERE user_id = ?", (user_id,))
+    conn.commit()
+
+
+def get_active_status(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT status_key FROM active_status WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["status_key"] if row else None

@@ -3,7 +3,9 @@ boss_rush.py — «Боевой клуб Хакари»: boss rush через в
 
 Формат:
 - Игрок платит за вход и бьётся с боссами ПОСЛЕДОВАТЕЛЬНО, один за другим.
-- Между боями HP и ПЭ полностью восстанавливаются.
+- На СТАРТЕ забега HP и ПЭ восстанавливаются один раз.
+- МЕЖДУ боями HP и ПЭ НЕ восстанавливаются.
+- Использовать расходники во время забега НЕЛЬЗЯ (см. main.py).
 - Проиграл → забег закончился, получил накопленное.
 - Сбежал → забег закончился, потерял всё.
 - Прошёл всех → накопленное + 30% бонусом + легендарный трофей.
@@ -184,7 +186,9 @@ def _update_run(user_id, current_idx, acc_gold, acc_exp, killed, status="active"
     conn.commit()
 
 
-def _full_heal(user_id):
+def _full_heal_at_start(user_id):
+    """Один раз в начале забега — полный HP и ПЭ.
+    Между боями НЕ вызывается."""
     try:
         import ce_types
         player = database.get_or_create_player(user_id, "")
@@ -289,7 +293,7 @@ def start_rush(user_id):
     )
     conn.commit()
 
-    _full_heal(user_id)
+    _full_heal_at_start(user_id)
     spawn = _spawn_boss(user_id, boss_list, 0)
     if not spawn["ok"]:
         _delete_run(user_id)
@@ -336,13 +340,12 @@ def on_rush_boss_victory(user_id, encounter, log):
     next_idx = idx + 1
     if next_idx < len(boss_list):
         _update_run(user_id, next_idx, acc_gold, acc_exp, killed, "active")
-        _full_heal(user_id)
         spawn = _spawn_boss(user_id, boss_list, next_idx)
         if not spawn["ok"]:
             return _finalize_rush(user_id, acc_gold, acc_exp, killed, log, full_clear=False)
         nxt = boss_list[next_idx]
         log.append(f"\n👉 Следующий: {nxt['emoji']} <b>{nxt['base_name']}</b>")
-        log.append("<i>HP и ПЭ восстановлены. Продолжай забег!</i>")
+        log.append("<i>HP и ПЭ не восстанавливаются между боями. Расходники запрещены.</i>")
         return {
             "status": "ongoing",
             "log": log,
@@ -467,13 +470,16 @@ def format_menu(user_id):
         "🥊 <b>Боевой клуб Хакари</b>",
         "",
         "<i>Хакари: «Boss rush через всех, кого ты уже побеждал. "
-        "Один забег без остановок. HP и ПЭ восстанавливаю между боями. "
+        "Один забег без остановок. HP и ПЭ восстанавливаю ОДИН РАЗ на входе. "
+        "Между боями — не жди пощады. Зелья не помогут. "
         "Проиграл — забег кончился, получил что успел. "
         "Сбежал — ушёл ни с чем. Прошёл всех — большой бонус.»</i>",
         "",
         f"💠 <b>Вход:</b> {cost} (за {n} боссов)",
         f"⏱ Кулдаун между забегами: {format_cooldown(RUSH_COOLDOWN_SECONDS)}",
         f"💠 У тебя: <b>{player['gold']}</b>",
+        "🚫 <b>Расходники запрещены</b>",
+        "💔 <b>HP и ПЭ между боями НЕ восстанавливаются</b>",
     ]
     if cd > 0:
         lines.append(f"⏳ Следующий забег через: <b>{format_cooldown(cd)}</b>")

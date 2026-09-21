@@ -27,6 +27,7 @@ import subway
 import gacha
 import consumables
 import bosses
+import boss_rush
 import shop
 import quests
 import rest
@@ -95,16 +96,13 @@ def format_active_buffs(user_id: int) -> str:
 
 
 def _gojo_is_sealed(user_id: int) -> bool:
-    """True, если Годжо уже запечатан и не может говорить от своего имени.
-    В главах 1-6 он ещё на свободе, с 7-й — запечатан."""
     chapter = story.get_current_chapter(user_id)
     if chapter is None:
-        return True  # сюжет пройден — Годжо точно нет
+        return True
     return chapter.get("num", 1) >= story.GOJO_SEALED_FROM
 
 
 def _domain_button(user_id: int) -> tuple[str, str]:
-    """Кнопка домена с учётом ПЭ и Проклятия Небес."""
     dk, dt = database.get_domain(user_id)
     if dk and dt > 0:
         return (f"🌌 Домен активен ({dt} х.)", "noop")
@@ -500,6 +498,7 @@ def shop_menu_keyboard(npc_id: str):
         ],
         [InlineKeyboardButton("🏴‍☠️ Склад проклятого оружия", callback_data=f"gear_menu:{npc_id}")],
         [InlineKeyboardButton("🎰 Гача", callback_data="gacha_hub")],
+        [InlineKeyboardButton("🥊 Боевой клуб", callback_data="boss_rush_menu")],
         [InlineKeyboardButton("⬅️ Выйти", callback_data="back_to_game")],
     ])
 
@@ -633,7 +632,6 @@ def story_temp_keyboard(user_id: int) -> InlineKeyboardMarkup:
                 "👁 Войти к боссу", callback_data="story_temp_boss",
             )])
 
-    # Кнопка «Поговорить» — если в локации есть NPC под задачу talk
     npc = story.get_current_npc(user_id)
     if npc:
         rows.append([InlineKeyboardButton(
@@ -744,6 +742,33 @@ def raid_battle_keyboard(raid_id: int, user_id: int) -> InlineKeyboardMarkup:
 def raid_finished_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅️ В меню", callback_data="back_to_game")],
+    ])
+
+
+# ---------------------- Клавиатуры боевого клуба ----------------------
+
+def boss_rush_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Главный экран клуба: список доступных боссов + кнопка ухода."""
+    rows = []
+    if boss_rush.is_unlocked(user_id):
+        available = boss_rush.get_available_bosses(user_id)
+        for b in available:
+            rows.append([InlineKeyboardButton(
+                f"{b['emoji']} {b['base_name']} (гл. {b['chapter_num']})",
+                callback_data=f"boss_rush_open:{b['index']}",
+            )])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="npc:hakari")])
+    return InlineKeyboardMarkup(rows)
+
+
+def boss_rush_boss_keyboard(user_id: int, idx: int) -> InlineKeyboardMarkup:
+    """Карточка конкретного босса клуба."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            f"⚔️ Драться! ({config.BOSS_RUSH_ENTRY_COST}💠)",
+            callback_data=f"boss_rush_fight:{idx}",
+        )],
+        [InlineKeyboardButton("⬅️ К списку", callback_data="boss_rush_menu")],
     ])
 
 
@@ -1478,6 +1503,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     done: list[dict] = []
 
+    # ================= БОЕВОЙ КЛУБ ХАКАРИ =================
+
+    if data == "boss_rush_menu":
+        text = boss_rush.format_menu(user_id)
+        await render(query, context, text, boss_rush_menu_keyboard(user_id))
+        return
+
+    if data.startswith("boss_rush_open:"):
+        try:
+            idx = int(data.split(":", 1)[1])
+        except ValueError:
+            idx = -1
+        if not boss_rush.is_unlocked(user_id):
+            text = boss_rush.format_menu(user_id)
+            await render(query, context, text, boss_rush_menu_keyboard(user_id))
+            return
+        text = boss_rush.format_boss_detail(user_id, idx)
+        await render(query, context, text, boss_rush_boss_keyboard(user_id, idx))
+        return
+
+    if data.startswith("boss_rush_fight:"):
+        try:
+            idx = int(data.split(":", 1)[1])
+        except ValueError:
+            idx = -1
+        res = boss_rush.start_battle(user_id, idx)
+        if not res["ok"]:
+            text = "❌ " + res["msg"] + "\n\n" + boss_rush.format_menu(user_id)
+            await render(query, context, text, boss_rush_menu_keyboard(user_id))
+            return
+        encounter = database.get_encounter(user_id)
+        fresh_player = database.get_or_create_player(user_id, "")
+        text = (res["msg"] + "\n\n"
+                + combat.encounter_status_text(encounter) + "\n\n"
+                + combat.player_status_text(fresh_player, user_id))
+        image_path = assets.get_monster_image(encounter["monster_name"])
+        await render(query, context, text, kb_for(user_id), image_path=image_path)
+        await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
+        return
+
     # ================= РЕЙД =================
 
     if data == "raid_menu":
@@ -2035,7 +2100,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         story.exit_temp(user_id)
         story.enter_temp(user_id)
 
-        # Регистрируем find-шаг, если он есть в текущей главе
         story.register_find_step(user_id, temp["id"])
 
         text = (
@@ -2081,7 +2145,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render(query, context, text, story_temp_keyboard(user_id))
             return
 
-        # Регистрируем reach-шаг при старте боя в сюжетной локации
         story.register_reach_step(user_id, temp["id"])
 
         encounter = database.get_encounter(user_id)
@@ -2791,147 +2854,4 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data == "gear_unequip":
         result = equipment.unequip(user_id)
-        prefix = "✅ " if result["ok"] else "❌ "
-        text = prefix + result["msg"]
-        await render(query, context, text, gear_owned_keyboard(user_id))
-
-    # ================= НАЗАД / NOOP =================
-
-    elif data == "back_to_game":
-        if context.user_data.pop("prev_screen", None) == "profile":
-            await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
-            return
-
-        r = raid.get_active_raid_for_user(user_id)
-        if r:
-            await _render_raid_screen(query, context, r["id"], user_id)
-            return
-
-        encounter = database.get_encounter(user_id)
-        if encounter:
-            fresh_player = database.get_or_create_player(user_id, "")
-            text = (combat.encounter_status_text(encounter) + "\n\n"
-                    + combat.player_status_text(fresh_player, user_id))
-            image_path = assets.get_monster_image(encounter["monster_name"])
-            await render(query, context, text, kb_for(user_id), image_path=image_path)
-        else:
-            text = location_text(user_id, x)
-            await render(query, context, text, kb_for(user_id),
-                         image_path=district_image_for_x(x))
-
-    elif data == "noop":
-        return
-
-
-# ---------------------- Планировщик ----------------------
-
-async def delete_message_job(context: ContextTypes.DEFAULT_TYPE):
-    data = context.job.data or {}
-    chat_id = data.get("chat_id")
-    message_id = data.get("message_id")
-    if not chat_id or not message_id:
-        return
-    try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
-    except Exception as e:
-        logger.info(f"Не удалось удалить сообщение {message_id}: {e}")
-
-
-async def spawn_job(context: ContextTypes.DEFAULT_TYPE):
-    spawned = monsters.spawn_tick_for_all_players()
-    for user_id, monster, district in spawned:
-        curse_class = monster.get("curse_class", "")
-        if curse_class == "Особый класс":
-            header = "⛔ <b>ОСОБОЕ ПРОКЛЯТИЕ</b> появилось"
-        elif curse_class == "1-й класс":
-            header = "⚠️ <b>Проклятие 1-го ранга</b> появилось"
-        else:
-            header = "👀 <b>Проклятие</b> замечено"
-
-        text = (
-            f"{header} в локации: "
-            f"{district['emoji']} <b>{district['name']}</b>\n\n"
-            f"Нажми «🩸 Патрулирование», чтобы найти его."
-        )
-        try:
-            msg = await context.bot.send_message(chat_id=user_id, text=text, parse_mode="HTML")
-            context.job_queue.run_once(
-                delete_message_job,
-                when=SPAWN_NOTIFY_TTL_SECONDS,
-                data={"chat_id": user_id, "message_id": msg.message_id},
-                name=f"del_spawn_{user_id}_{msg.message_id}",
-            )
-        except Exception as e:
-            logger.warning(f"Не удалось уведомить {user_id}: {e}")
-
-
-async def clear_buffs_job(context: ContextTypes.DEFAULT_TYPE):
-    removed = database.clear_expired_buffs()
-    if removed:
-        logger.info(f"Очищено истёкших баффов: {removed}")
-
-
-# ---------------------- Миграции ----------------------
-
-def migrate_curse_seals():
-    conn = database.get_conn()
-    cur = conn.cursor()
-    total = 0
-    for seal_name in bosses.SUMMON_RECIPES.keys():
-        cur.execute(
-            "UPDATE inventory SET rarity = 'призыв' WHERE item_name = ? AND rarity != 'призыв'",
-            (seal_name,),
-        )
-        total += cur.rowcount
-    conn.commit()
-    if total > 0:
-        logger.info(f"Миграция печатей: исправлено {total} записей")
-
-
-# ---------------------- Точка входа ----------------------
-
-def main():
-    from health import start_health_server
-    start_health_server()
-
-    database.init_db()
-    rest._ensure_column()
-
-    try:
-        raid._ensure_tables()
-    except Exception as e:
-        logger.warning(f"Не удалось подготовить таблицы рейда: {e}")
-    try:
-        story._ensure_table()
-    except Exception as e:
-        logger.warning(f"Не удалось подготовить таблицу сюжета: {e}")
-
-    migrate_curse_seals()
-
-    app = Application.builder().token(config.BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("map", map_command))
-    app.add_handler(CommandHandler("inventory", inventory_command))
-    app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
-
-    app.job_queue.run_repeating(
-        spawn_job,
-        interval=config.SPAWN_INTERVAL_SECONDS,
-        first=config.SPAWN_INTERVAL_SECONDS,
-    )
-    app.job_queue.run_repeating(
-        clear_buffs_job,
-        interval=BUFF_CLEANUP_INTERVAL,
-        first=BUFF_CLEANUP_INTERVAL,
-    )
-
-    logger.info("Бот запущен")
-    app.run_polling()
-
-
-if __name__ == "__main__":
-    main()
+        prefix = "✅

@@ -15,6 +15,13 @@
 
 Боссы глав имеют броню (defense), режущую получаемый урон, а также
 уникальные пассивки, скиллы и execute-добивание из story.BOSS_SKILLS.
+
+Броня сюжетных боссов ДИНАМИЧЕСКАЯ: чем сильнее игрок превышает
+min_level своей главы — тем выше броня (до BOSS_DEFENSE_CAP = 0.75).
+Так максимально раскачанный игрок не ваншотит босса, но и не страдает.
+
+Боссы боевого клуба Хакари (boss_rush) идут БЕЗ уровневой брони —
+их реально ваншотнуть, это фича.
 """
 import random
 
@@ -33,6 +40,7 @@ from config import (
     GOLD_PER_HP, EXP_PER_HP, DROP_CHANCE, DEATH_GOLD_LOSS,
     RARITY_EMOJI, EXP_BASE, CLASS_EMOJI,
     DOMAIN_UNLOCK_USES,
+    BOSS_DEFENSE_LEVEL_SCALE, BOSS_DEFENSE_CAP,
 )
 from loot import roll_quantity
 from bosses import BOSSES, is_boss, SUMMON_RECIPES
@@ -156,6 +164,59 @@ def _penalty_preview(user_id: int) -> tuple[int, float]:
     """Возвращает (следующее_использование_№, штраф_доля) для UI."""
     used = database.get_domain_uses_in_battle(user_id)
     return (used + 1, _get_reactivation_penalty(used))
+
+
+# ============================================================
+#  БРОНЯ БОССОВ С УРОВНЕВЫМ СКЕЙЛОМ
+# ============================================================
+
+def get_effective_boss_defense(user_id: int, encounter) -> float:
+    """Процентная защита босса с уровнес-скейлом.
+
+    Базовая defense задана в story.CHAPTERS[..]["temp_district"]["boss"]["defense"]
+    или в bosses.BOSSES для обычных особых боссов (у них defense = 0).
+    Если игрок выше min_level своей текущей главы — броня ползёт вверх
+    (до BOSS_DEFENSE_CAP = 0.75).
+
+    Для боссов боевого клуба (monster_name с префиксом "[Клуб]") скейл
+    НЕ применяется — там защита всегда = 0, чтобы можно было ваншотнуть.
+
+    Для обычных боссов из bosses.py (призыв ритуальной печатью) скейл
+    тоже не применяется — это свободная охота.
+    """
+    try:
+        base = encounter["defense"] or 0.0
+    except (IndexError, KeyError):
+        return 0.0
+
+    monster_name = encounter["monster_name"]
+
+    # Боссы боевого клуба — без брони вообще
+    if monster_name.startswith("[Клуб]"):
+        return 0.0
+
+    if base <= 0:
+        return 0.0
+
+    # Ищем главу сюжета, в которой этот босс является финальным
+    try:
+        chapter_lvl = None
+        for ch in story.CHAPTERS:
+            td = ch.get("temp_district") or {}
+            boss = td.get("boss")
+            if boss and boss.get("name") == monster_name:
+                chapter_lvl = ch.get("min_level", 1)
+                break
+
+        if chapter_lvl is None:
+            return base  # не сюжетный — без скейла
+
+        player = database.get_or_create_player(user_id, "")
+        excess = max(0, player["level"] - chapter_lvl)
+        scaled = base + excess * BOSS_DEFENSE_LEVEL_SCALE
+        return min(BOSS_DEFENSE_CAP, scaled)
+    except Exception:
+        return base
 
 
 # ============================================================
@@ -297,18 +358,7 @@ def check_activation_condition(user_id: int) -> dict:
 # ============================================================
 
 def activate_domain_manual(user_id: int) -> dict:
-    """Ручная активация домена кнопкой.
-
-    Проверки:
-    - есть ли активный домен;
-    - разблокирован ли домен (20+ использований);
-    - выполнено ли условие activation в текущем бою;
-    - есть ли ПЭ (у Тоджи/Маки её нет — домен невозможен);
-    - хватает ли ПЭ (стоимость — 60% от эффективного максимума ПЭ).
-
-    При успехе: списывает ПЭ, обнуляет заряды, при повторной активации
-    в том же бою списывает HP (20% / 50% / 70%).
-    """
+    """Ручная активация домена кнопкой."""
     encounter = database.get_encounter(user_id)
     if not encounter:
         return {"ok": False, "msg": "Перед тобой никого нет."}
@@ -316,7 +366,6 @@ def activate_domain_manual(user_id: int) -> dict:
     player = database.get_or_create_player(user_id, "")
     eff = ce_types.get_effective_stats(user_id, player)
 
-    # --- ПЭ-проверка: у Тоджи/Маки её нет вовсе ---
     if eff["max_ce"] <= 0:
         return {
             "ok": False,
@@ -352,7 +401,6 @@ def activate_domain_manual(user_id: int) -> dict:
     if not domain_key:
         return {"ok": False, "msg": "Домен для этой техники не найден."}
 
-    # --- Стоимость ПЭ: 60% от эффективного максимума ---
     domain_cost = max(1, int(eff["max_ce"] * DOMAIN_CE_COST_FRACTION))
 
     if eff["ce"] < domain_cost:
@@ -366,7 +414,6 @@ def activate_domain_manual(user_id: int) -> dict:
             ),
         }
 
-    # --- Списываем ПЭ ---
     database.update_player_ce(user_id, eff["ce"] - domain_cost)
 
     domain_data = DOMAINS[domain_key]
@@ -376,7 +423,6 @@ def activate_domain_manual(user_id: int) -> dict:
         f"({int(DOMAIN_CE_COST_FRACTION * 100)}% от максимума)."
     ]
 
-    # --- Штраф HP за повторную активацию ---
     uses_before = database.get_domain_uses_in_battle(user_id)
     penalty = _get_reactivation_penalty(uses_before)
 
@@ -390,7 +436,6 @@ def activate_domain_manual(user_id: int) -> dict:
             f"({int(penalty * 100)}% от текущего). HP: {new_hp}/{current_hp}."
         )
 
-    # --- Активация ---
     if effect.get("gamble"):
         if random.random() < 0.5:
             database.set_domain(user_id, domain_key, 3)
@@ -440,7 +485,6 @@ def _process_domain_turn(user_id: int, player, encounter, log: list) -> bool:
     domain_data = DOMAINS.get(domain_key, {})
     domain_name = domain_data.get("name", domain_key)
 
-    # DoT домена игнорирует броню монстра — это внутренний эффект ПЭ.
     if effect.get("summon_rika"):
         rika_dmg = effect.get("rika_dmg", 50)
         encounter = database.get_encounter(user_id)
@@ -504,7 +548,6 @@ def _ce_regen_amount(user_id: int, player) -> int:
     effects = ce_types.get_active_effects(user_id)
     base = base * effects.get("ce_regen_mult", 1.0)
 
-    # Домен Хакари может давать множитель регена ПЭ
     domain_key, domain_turns = database.get_domain(user_id)
     if domain_key and domain_turns > 0:
         domain_eff = DOMAIN_EFFECTS.get(domain_key, {})
@@ -967,13 +1010,11 @@ def _curse_turn(user_id: int, player, encounter, log: list,
     dodge_bonus += domain_eff.get("dodge_bonus", 0.0)
     total_miss = min(0.90, MONSTER_MISS_CHANCE + dodge_bonus + domain_eff.get("enemy_miss_bonus", 0.0))
 
-    # Оглушение монстра
     if encounter["stun_turns"] > 0:
         log.append(f"😵 {encounter['monster_name']} оглушено и пропускает ход!")
         database.set_encounter_status(user_id, stun_turns=encounter["stun_turns"] - 1)
         return None
 
-    # Промах/уклонение
     if random.random() < total_miss:
         if dodge_bonus > 0 and random.random() < dodge_bonus / total_miss:
             log.append(f"🌀 <b>Ты уклонился</b> от атаки {encounter['monster_name']}!")
@@ -981,25 +1022,20 @@ def _curse_turn(user_id: int, player, encounter, log: list,
             log.append(f"🛡 {encounter['monster_name']} промахнулось!")
         return None
 
-    # Боссовые пассивки/скиллы
     skills = _get_boss_skills(encounter["monster_name"])
     if skills:
-        # 1. Добивание
         death = _try_execute(user_id, player, encounter, skills, log)
         if death:
             return death
 
-        # 2. Пассивка
         death = _try_passive(user_id, player, encounter, skills, log)
         if death:
             return death
 
-        # 3. Скилл
         death = _try_skill(user_id, player, encounter, skills, log)
         if death:
             return death
 
-    # Обычная атака
     raw = random.randint(encounter["dmg_min"], encounter["dmg_max"])
     mdmg = _compute_monster_hit(user_id, player, encounter, raw,
                                  damage_mult=damage_mult, self_mult=self_mult)
@@ -1066,12 +1102,8 @@ def attack(user_id: int, technique_name: str | None = None) -> dict:
         if black_flash:
             database.add_charge(user_id, "black_flash", 1)
 
-    # Броня монстра
-    defense = 0.0
-    try:
-        defense = encounter["defense"] or 0.0
-    except (IndexError, KeyError):
-        defense = 0.0
+    # Броня монстра (с уровневым скейлом для сюжетных боссов)
+    defense = get_effective_boss_defense(user_id, encounter)
 
     if dmg > 0 and defense > 0:
         reduced = max(1, int(dmg * (1.0 - defense)))

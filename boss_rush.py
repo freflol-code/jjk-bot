@@ -17,7 +17,9 @@ boss_rush.py — «Боевой клуб Хакари»: boss rush через в
     exp  = boss.reward_exp  + 1500
     (× VIP-множитель, если VIP активен)
 
-Боссы в клубе: HP × 1.5, урон × 1.2, броня = 0 (можно ваншотнуть).
+Боссы в клубе: HP × 2.0, урон × 1.5, броня = 0 (можно ваншотнуть).
+Против клубных боссов у игрока работает пробитие защиты 40%
+(см. combat.CLUB_DEFENSE_PIERCE) — иначе бой превращается в избиение.
 """
 import json
 import time
@@ -31,8 +33,8 @@ CLUB_PREFIX = "[Клуб] "
 BASE_ENTRY = 5000
 PER_BOSS_ENTRY = 1000
 
-BOSS_HP_MULT = 1.5
-BOSS_DMG_MULT = 1.2
+BOSS_HP_MULT = 2.0
+BOSS_DMG_MULT = 1.5
 
 REWARD_GOLD_FLAT = 3000
 REWARD_EXP_FLAT = 1500

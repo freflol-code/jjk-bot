@@ -5,7 +5,7 @@ boss_rush.py — «Боевой клуб Хакари»: boss rush через в
 - Игрок платит за вход и бьётся с боссами ПОСЛЕДОВАТЕЛЬНО, один за другим.
 - На СТАРТЕ забега HP и ПЭ восстанавливаются один раз.
 - МЕЖДУ боями HP и ПЭ НЕ восстанавливаются.
-- Использовать расходники во время забега НЕЛЬЗЯ (см. main.py).
+- Использовать расходники во время забега НЕЛЬЗЯ.
 - Проиграл → забег закончился, получил накопленное.
 - Сбежал → забег закончился, потерял всё.
 - Прошёл всех → накопленное + 30% бонусом + легендарный трофей.
@@ -15,13 +15,13 @@ boss_rush.py — «Боевой клуб Хакари»: boss rush через в
     Пример: 4 босса = 5000 + 1000×3 = 8000.
 
 Награда за каждого убитого босса:
-    gold = boss.reward_gold + 3000
-    exp  = boss.reward_exp  + 1500
-    (× VIP-множитель, если VIP активен)
+    REWARD_FRACTION × среднее_арифметическое(награды всех боссов забега)
+    По умолчанию REWARD_FRACTION = 0.25 (25%).
+    Умножается на VIP-множитель, если VIP активен.
 
-Боссы в клубе: HP × 2.0, урон × 1.5, броня = 0 (можно ваншотнуть).
+Боссы в клубе: HP × 2.0, урон × 1.5, броня = 0.
 Против клубных боссов у игрока работает пробитие защиты 40%
-(см. combat.CLUB_DEFENSE_PIERCE) — иначе бой превращается в избиение.
+(см. combat.CLUB_DEFENSE_PIERCE).
 """
 import json
 import time
@@ -38,8 +38,9 @@ PER_BOSS_ENTRY = 1000
 BOSS_HP_MULT = 2.0
 BOSS_DMG_MULT = 1.5
 
-REWARD_GOLD_FLAT = 3000
-REWARD_EXP_FLAT = 1500
+# Доля от среднего арифметического наград всех боссов в забеге.
+# 0.25 = 25%. За каждого убитого босса.
+REWARD_FRACTION = 0.25
 
 FULL_CLEAR_GOLD_BONUS_MULT = 0.30
 FULL_CLEAR_EXP_BONUS_MULT = 0.30
@@ -119,6 +120,24 @@ def entry_cost(user_id):
     if n <= 0:
         return 0
     return BASE_ENTRY + PER_BOSS_ENTRY * (n - 1)
+
+
+def _avg_rewards(boss_list):
+    """Среднее арифметическое награды всех боссов в забеге.
+    Возвращает (avg_gold, avg_exp)."""
+    if not boss_list:
+        return (0, 0)
+    n = len(boss_list)
+    total_gold = sum(b["reward_gold"] for b in boss_list)
+    total_exp = sum(b["reward_exp"] for b in boss_list)
+    return (total_gold // n, total_exp // n)
+
+
+def per_boss_reward(boss_list):
+    """Сколько игрок получит за одного босса (без VIP).
+    REWARD_FRACTION × среднее."""
+    avg_gold, avg_exp = _avg_rewards(boss_list)
+    return (int(avg_gold * REWARD_FRACTION), int(avg_exp * REWARD_FRACTION))
 
 
 # ============ КУЛДАУН ============
@@ -255,6 +274,33 @@ def _spawn_boss(user_id, boss_list, idx):
     return {"ok": True, "stage": idx + 1, "total": len(boss_list), "boss": b}
 
 
+def respawn_current_boss(user_id):
+    """Пересоздаёт encounter для текущего индекса забега.
+    Используется, если encounter пропал (истёк TTL, сброс бота и т.п.),
+    а забег всё ещё активен.
+
+    Возвращает dict как _spawn_boss: {ok, stage, total, boss} или {ok: False, msg}.
+    """
+    run = _get_run(user_id)
+    if not run or run["status"] != "active":
+        return {"ok": False, "msg": "У тебя нет активного забега."}
+
+    boss_list = _freeze_bosses(user_id)
+    if not boss_list:
+        return {"ok": False, "msg": "Список боссов пуст."}
+
+    idx = run["current_idx"]
+    if idx < 0 or idx >= len(boss_list):
+        return {"ok": False, "msg": "Некорректный индекс босса."}
+
+    existing = database.get_encounter(user_id)
+    if existing:
+        return {"ok": True, "stage": idx + 1, "total": len(boss_list),
+                "boss": boss_list[idx], "already_spawned": True}
+
+    return _spawn_boss(user_id, boss_list, idx)
+
+
 # ============ СТАРТ ЗАБЕГА ============
 
 def start_rush(user_id):
@@ -322,18 +368,21 @@ def on_rush_boss_victory(user_id, encounter, log):
     acc_gold = run["accumulated_gold"]
     acc_exp = run["accumulated_exp"]
 
-    if 0 <= idx < len(boss_list):
-        b = boss_list[idx]
-        vip = database.vip_mult(user_id)
-        gold_add = int((b["reward_gold"] + REWARD_GOLD_FLAT) * vip)
-        exp_add = int((b["reward_exp"] + REWARD_EXP_FLAT) * vip)
-        acc_gold += gold_add
-        acc_exp += exp_add
-        log.append(f"\n🥊 <b>Босс {killed}/{len(boss_list)} повержен!</b>")
-        log.append(f"💰 +{gold_add}💠 · 🧬 +{exp_add} опыта")
-        log.append(f"📦 Накоплено: {acc_gold}💠 / {acc_exp}🧬")
-        if vip > 1:
-            log.append("💎 <i>VIP: награды ×2</i>")
+    avg_gold, avg_exp = _avg_rewards(boss_list)
+    base_gold = int(avg_gold * REWARD_FRACTION)
+    base_exp = int(avg_exp * REWARD_FRACTION)
+
+    vip = database.vip_mult(user_id)
+    gold_add = int(base_gold * vip)
+    exp_add = int(base_exp * vip)
+    acc_gold += gold_add
+    acc_exp += exp_add
+
+    log.append(f"\n🥊 <b>Босс {killed}/{len(boss_list)} повержен!</b>")
+    log.append(f"💰 +{gold_add}💠 · 🧬 +{exp_add} опыта")
+    log.append(f"📦 Накоплено: {acc_gold}💠 / {acc_exp}🧬")
+    if vip > 1:
+        log.append("💎 <i>VIP: награды ×2</i>")
 
     database.clear_encounter(user_id)
 
@@ -466,6 +515,9 @@ def format_menu(user_id):
     cd = get_cooldown_left(user_id)
     active = is_rush_active(user_id)
 
+    avg_gold, avg_exp = _avg_rewards(boss_list)
+    per_gold, per_exp = per_boss_reward(boss_list)
+
     lines = [
         "🥊 <b>Боевой клуб Хакари</b>",
         "",
@@ -488,13 +540,21 @@ def format_menu(user_id):
     for i, b in enumerate(boss_list, start=1):
         lines.append(
             f"  {i}. {b['emoji']} <b>{b['base_name']}</b> "
-            f"(гл. {b['chapter_num']}) — ❤️ {int(b['hp'] * BOSS_HP_MULT)}"
+            f"(гл. {b['chapter_num']}) — ❤️ {int(b['hp'] * BOSS_HP_MULT)} · "
+            f"💰 {b['reward_gold']} · 🧬 {b['reward_exp']}"
         )
     lines.append("")
     lines.append("<b>Награды:</b>")
-    lines.append(f"  💰 За босса: его сюжетная + {REWARD_GOLD_FLAT}💠")
-    lines.append(f"  🧬 За босса: его сюжетная + {REWARD_EXP_FLAT}")
-    lines.append(f"  🏆 За полное прохождение: +{int(FULL_CLEAR_GOLD_BONUS_MULT * 100)}% и «{FULL_CLEAR_ITEM_NAME}»")
+    lines.append(
+        f"  💰 За босса: <b>{per_gold}💠</b> "
+        f"({int(REWARD_FRACTION * 100)}% от среднего {avg_gold})"
+    )
+    lines.append(
+        f"  🧬 За босса: <b>{per_exp}</b> "
+        f"({int(REWARD_FRACTION * 100)}% от среднего {avg_exp})"
+    )
+    lines.append(f"  💎 VIP: ×2")
+    lines.append(f"  🏆 Полное прохождение: +{int(FULL_CLEAR_GOLD_BONUS_MULT * 100)}% и «{FULL_CLEAR_ITEM_NAME}»")
     lines.append("")
     if active:
         run = _get_run(user_id)

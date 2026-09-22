@@ -1617,9 +1617,13 @@ async def button_handler(update, context):
             return
         encounter = database.get_encounter(user_id)
         if not encounter:
-            text = "ℹ️ Забег есть, но босс не заспавнен. Открой клуб заново."
-            await render(query, context, text, boss_rush.rush_menu_keyboard(user_id))
-            return
+            respawn = boss_rush.respawn_current_boss(user_id)
+            if not respawn.get("ok"):
+                text = ("⚠️ " + respawn.get("msg", "Не удалось восстановить бой.")
+                        + "\n\n" + boss_rush.format_menu(user_id))
+                await render(query, context, text, boss_rush.rush_menu_keyboard(user_id))
+                return
+            encounter = database.get_encounter(user_id)
         fresh_player = database.get_or_create_player(user_id, "")
         text = (
             boss_rush.format_rush_progress(user_id) + "\n\n"

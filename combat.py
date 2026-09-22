@@ -22,7 +22,7 @@ min_level своей главы — тем выше броня (до BOSS_DEFENS
 
 Боссы боевого клуба Хакари (boss_rush) идут БЕЗ уровневой брони —
 их реально ваншотнуть, это фича. НО урон клубных боссов пробивает
-25% защиты игрока (CLUB_DEFENSE_PIERCE), чтобы бой не превращался
+40% защиты игрока (CLUB_DEFENSE_PIERCE), чтобы бой не превращался
 в избиение. Победа/смерть/побег в забеге перехватываются
 boss_rush.on_rush_* хуками.
 """
@@ -65,10 +65,6 @@ DOMAIN_REACTIVATION_PENALTY = [0.0, 0.20, 0.50, 0.70]
 DOMAIN_CE_COST_FRACTION = 0.60
 
 # Пробитие защиты игрока боссами боевого клуба.
-# Итоговая защита игрока против клубного босса:
-#     reduction = max(0, min(DEFENSE_CAP, base) - CLUB_DEFENSE_PIERCE)
-# При DEFENSE_CAP = 0.65 и pierce = 0.40 игрок получает 25% защиты
-# вместо 65% — босс бьёт ощутимо.
 CLUB_DEFENSE_PIERCE = 0.40
 
 
@@ -743,9 +739,24 @@ def _apply_effect(user_id, encounter, effect, log):
 # ---------------- Победа/смерть ----------------
 
 def _story_tracking(user_id, encounter, log):
+    """Трекинг сюжетных kill-шагов.
+
+    ВСЕГДА считаем kill по классу проклятия — чтобы работали шаги вида
+    {"type": "kill", "target": "2-й класс"} в любой локации (включая
+    temp-локации, где class-шаги раньше не засчитывались).
+
+    Дополнительно, если игрок в temp-локации, считаем kill по её id —
+    чтобы работали шаги вида {"type": "kill", "target": "shibuya_ruins"}.
+
+    И всегда считаем kill_boss.
+    """
     in_temp = story.is_in_temp(user_id)
     temp = story.get_temp_district(user_id) if in_temp else None
 
+    # 1. Класс проклятия — всегда
+    story.add_progress(user_id, "kill", target=encounter["curse_class"])
+
+    # 2. ID локации — если в temp
     if in_temp and temp:
         story.add_progress(user_id, "kill", target=temp["id"])
         boss = temp.get("boss")
@@ -758,9 +769,8 @@ def _story_tracking(user_id, encounter, log):
                 database.add_item(user_id, dn, dr, dq)
                 em = RARITY_EMOJI.get(dr, "⚪")
                 log.append(f"\n🎁 Сюжетный трофей: {em} <b>{dn}</b> x{dq}")
-    else:
-        story.add_progress(user_id, "kill", target=encounter["curse_class"])
 
+    # 3. Босс — всегда
     story.add_progress(user_id, "kill_boss", target=encounter["monster_name"])
 
 

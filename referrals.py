@@ -4,22 +4,16 @@ referrals.py — реферальная система.
 За каждого приглашённого друга реферер получает:
 - +3 дня VIP
 - +1000 💠 очков Ассоциации
-
-Правила:
-- Ссылка: https://t.me/<bot_username>?start=ref_<user_id>
-- Награда выдаётся ТОЛЬКО если приглашённый — новый игрок
-- Один игрок может быть приглашён только один раз
-- Пригласить самого себя нельзя
-- Реферер должен существовать в БД
 """
 import time
+import logging
 
 import database
 
+logger = logging.getLogger(__name__)
 
 REWARD_VIP_DAYS = 3
 REWARD_GOLD = 1000
-
 
 _db_ready = False
 
@@ -60,7 +54,6 @@ def _already_referred(user_id):
 
 
 def get_invited_count(user_id):
-    """Сколько друзей привёл игрок."""
     _ensure_tables()
     conn = database.get_conn()
     cur = conn.cursor()
@@ -72,34 +65,32 @@ def get_invited_count(user_id):
 
 
 def register_referral(new_user_id, new_username, referrer_id):
-    """Регистрирует игрока и, если он новый и реф-код валиден, засчитывает реферал.
-
-    Возвращает dict:
-        {"ok": True, "referred": True}   — реферал засчитан, награда выдана
-        {"ok": True, "referred": False, "reason": "..."}   — игрок создан, но реферал не засчитан
-        {"ok": False, "reason": "..."}   — ошибка
-    """
+    """Регистрирует игрока и, если он новый и реф-код валиден, засчитывает реферал."""
     _ensure_tables()
 
     was_existing = _player_exists(new_user_id)
-
     database.get_or_create_player(new_user_id, new_username or "")
 
     if was_existing:
         return {"ok": True, "referred": False, "reason": "not_new_player"}
-
     if not referrer_id:
         return {"ok": True, "referred": False, "reason": "no_referrer"}
-
     if referrer_id == new_user_id:
         return {"ok": True, "referred": False, "reason": "self_referral"}
-
     if not _player_exists(referrer_id):
         return {"ok": True, "referred": False, "reason": "referrer_not_found"}
-
     if _already_referred(new_user_id):
         return {"ok": True, "referred": False, "reason": "already_referred"}
 
+    # 1. СНАЧАЛА награда. Если упадёт — реферал не запишется.
+    try:
+        database.add_vip_days(referrer_id, REWARD_VIP_DAYS)
+        database.add_gold(referrer_id, REWARD_GOLD)
+    except Exception as e:
+        logger.warning(f"Реф-награда упала для {referrer_id}: {e}")
+        return {"ok": True, "referred": False, "reason": "reward_failed"}
+
+    # 2. Потом запись реферала.
     conn = database.get_conn()
     conn.execute(
         "INSERT INTO referrals (referrer_id, referred_id, created_at) "
@@ -107,9 +98,6 @@ def register_referral(new_user_id, new_username, referrer_id):
         (referrer_id, new_user_id, int(time.time())),
     )
     conn.commit()
-
-    database.add_vip_days(referrer_id, REWARD_VIP_DAYS)
-    database.add_gold(referrer_id, REWARD_GOLD)
 
     return {"ok": True, "referred": True, "referrer_id": referrer_id}
 
@@ -128,7 +116,6 @@ def format_menu(user_id, bot_username):
     count = get_invited_count(user_id)
     total_vip = count * REWARD_VIP_DAYS
     total_gold = count * REWARD_GOLD
-
     link = _build_link(bot_username, user_id) or "(ссылка пока недоступна)"
 
     lines = [
@@ -138,8 +125,7 @@ def format_menu(user_id, bot_username):
         f"  💎 <b>{REWARD_VIP_DAYS} дня VIP</b> (×2 золото, опыт, дроп и награды)",
         f"  💠 <b>{REWARD_GOLD} очков Ассоциации</b>",
         "",
-        "<i>Друг должен быть новым игроком — кто уже заходил в бота, "
-        "по ссылке не засчитается.</i>",
+        "<i>Друг должен быть новым игроком.</i>",
         "",
         f"📊 <b>Уже приглашено:</b> {count}",
     ]
@@ -148,8 +134,6 @@ def format_menu(user_id, bot_username):
     lines.append("")
     lines.append("<b>Твоя ссылка:</b>")
     lines.append(f"<code>{link}</code>")
-    lines.append("")
-    lines.append("<i>Нажми «📤 Поделиться» — Telegram предложит выбрать чат.</i>")
     return "\n".join(lines)
 
 
@@ -158,22 +142,15 @@ def menu_keyboard(user_id, bot_username):
     rows = []
     link = _build_link(bot_username, user_id)
     if link:
-        # switch_inline_query — единственный надёжный способ поделиться
-        # ссылкой из бота. Обычный https://t.me/share/url?... Telegram
-        # не принимает в кнопках (Button_url_invalid).
         share_text = f"Заходи в «Магическую Битву: Токио» — я уже там! {link}"
         if len(share_text) > 250:
             share_text = share_text[:250]
-        rows.append([InlineKeyboardButton(
-            "📤 Поделиться",
-            switch_inline_query=share_text,
-        )])
+        rows.append([InlineKeyboardButton("📤 Поделиться", switch_inline_query=share_text)])
     rows.append([InlineKeyboardButton("⬅️ В профиль", callback_data="profile_menu")])
     return InlineKeyboardMarkup(rows)
 
 
 def format_success_for_referrer(user_id):
-    """Короткое сообщение для реферера о новом реферале."""
     return (
         f"🎁 <b>+1 реферал!</b>\n\n"
         f"Тебе начислено:\n"

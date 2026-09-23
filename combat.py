@@ -4,6 +4,10 @@
 и VIP-множителя наград.
 
 Расширения Территории активируются ВРУЧНУЮ кнопкой «🌌 Использовать домен».
+Игрок может выбрать домен вручную в разделе «Мои техники → Расширения Территории».
+Если выбор не сделан — используется первая разблокированная мастер-техника
+из боевого набора.
+
 Мастер-техника копит счётчик использований (для разблокировки домена).
 Плюс в каждом бою отдельно копятся заряды под условие активации домена
 (deal_damage_N / take_damage_N / use_tech_N / use_black_flash_N).
@@ -66,6 +70,7 @@ DOMAIN_CE_COST_FRACTION = 0.60
 
 # Пробитие защиты игрока боссами боевого клуба.
 CLUB_DEFENSE_PIERCE = 0.40
+
 
 # ============================================================
 #  ЭФФЕКТЫ РАСШИРЕНИЙ ТЕРРИТОРИИ (домены)
@@ -280,14 +285,40 @@ def player_has_unlocked_domain(user_id):
     return False
 
 
-def get_unlocked_domain_technique(user_id):
-    equipped = gacha.get_equipped(user_id)
-    for name in equipped:
+def get_all_unlocked_domains(user_id):
+    """Возвращает список ВСЕХ техник игрока с разблокированным доменом
+    (независимо от того, стоят ли они в боевом наборе)."""
+    result = []
+    for row in database.get_player_techniques(user_id):
+        name = row["technique_name"]
         t = gacha.get_technique(name)
         if not t or not t.get("has_domain"):
             continue
         uses = database.get_technique_uses(user_id, name)
         if uses >= DOMAIN_UNLOCK_USES:
+            result.append(name)
+    return result
+
+
+def get_unlocked_domain_technique(user_id):
+    """Возвращает имя техники, чей домен нужно активировать при нажатии
+    «🌌 Использовать домен».
+
+    Приоритет:
+    1. Домен, выбранный игроком вручную.
+    2. Первая разблокированная мастер-техника из боевого набора (fallback).
+    """
+    unlocked = get_all_unlocked_domains(user_id)
+    if not unlocked:
+        return None
+
+    selected = database.get_active_domain(user_id)
+    if selected and selected in unlocked:
+        return selected
+
+    equipped = gacha.get_equipped(user_id)
+    for name in equipped:
+        if name in unlocked:
             return name
     return None
 

@@ -649,12 +649,13 @@ def raid_lobby_keyboard(raid_id, user_id, bot_username):
     if r and r["creator_id"] == user_id:
         rows.append([InlineKeyboardButton("▶️ Начать бой", callback_data=f"raid_start:{raid_id}")])
     if bot_username:
-        share_url = (
-            f"https://t.me/share/url?"
-            f"url=https://t.me/{bot_username}?start=raid_{raid_id}"
-            f"&text=Присоединяйся к рейду на Сукуну!"
+        share_text = (
+            f"Присоединяйся к рейду на Сукуну! "
+            f"https://t.me/{bot_username}?start=raid_{raid_id}"
         )
-        rows.append([InlineKeyboardButton("📤 Пригласить друзей", url=share_url)])
+        if len(share_text) > 250:
+            share_text = share_text[:250]
+        rows.append([InlineKeyboardButton("📤 Пригласить друзей", switch_inline_query=share_text)])
     rows.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"raid_show:{raid_id}")])
     rows.append([InlineKeyboardButton("🚪 Выйти", callback_data=f"raid_leave:{raid_id}")])
     return InlineKeyboardMarkup(rows)
@@ -1027,9 +1028,10 @@ async def start(update, context):
     user = update.effective_user
     args = context.args or []
 
-    # --- Реферальная ссылка: /start ref_<user_id> ---
     referral_msg = ""
+    welcome_bonus_msg = ""
     ref_code = None
+
     if args and args[0].startswith("ref_"):
         try:
             ref_code = int(args[0].split("_", 1)[1])
@@ -1055,8 +1057,32 @@ async def start(update, context):
                 )
             except Exception:
                 pass
+        else:
+            # Игрок уже существовал — но мог ещё не получить бонус новичка
+            if not database.has_welcome_bonus(user.id):
+                database.add_gold(user.id, 500)
+                database.add_item(user.id, "🍙 Онигири", "расходник", 3)
+                database.add_item(user.id, "📜 Свиток опыта Годжо", "расходник", 1)
+                database.set_welcome_bonus_claimed(user.id)
+                welcome_bonus_msg = (
+                    "\n\n🎁 <b>Бонус новичка!</b>\n"
+                    "  💠 +500 очков Ассоциации\n"
+                    "  🍙 Онигири ×3\n"
+                    "  📜 Свиток опыта Годжо ×1\n"
+                )
     else:
         database.get_or_create_player(user.id, user.username or user.first_name)
+        if not database.has_welcome_bonus(user.id):
+            database.add_gold(user.id, 500)
+            database.add_item(user.id, "🍙 Онигири", "расходник", 3)
+            database.add_item(user.id, "📜 Свиток опыта Годжо", "расходник", 1)
+            database.set_welcome_bonus_claimed(user.id)
+            welcome_bonus_msg = (
+                "\n\n🎁 <b>Бонус новичка!</b>\n"
+                "  💠 +500 очков Ассоциации\n"
+                "  🍙 Онигири ×3\n"
+                "  📜 Свиток опыта Годжо ×1\n"
+            )
 
     if args and args[0].startswith("raid_"):
         try:
@@ -1082,6 +1108,7 @@ async def start(update, context):
                   if r["status"] == "lobby" else raid_battle_keyboard(rid, user.id))
             await update.message.reply_html(text, reply_markup=kb)
             return
+
     if _gojo_is_sealed(user.id):
         intro = (
             f"👋 Привет, {user.first_name}!\n\n"
@@ -1097,7 +1124,7 @@ async def start(update, context):
             f"изгоняй проклятия, качай Контроль ПЭ и выбивай техники у Хакари. "
             f"Постарайся не умереть в первую же неделю.»\n\n"
         )
-    text = intro + referral_msg + location_text(user.id, 0)
+    text = intro + referral_msg + welcome_bonus_msg + location_text(user.id, 0)
     image_path = district_image_for_x(0)
     if image_path:
         try:
@@ -1484,8 +1511,6 @@ async def button_handler(update, context):
         await render(query, context, text, kb)
         return
 
-    # ================= BATTLE PASS =================
-
     if data == "bp_menu":
         text = battle_pass.format_battle_pass(user_id)
         season_id = battle_pass.get_season_info()["id"]
@@ -1582,8 +1607,6 @@ async def button_handler(update, context):
             await query.message.reply_text(f"❌ Ошибка оплаты: {e}")
         return
 
-    # ================= STATUSES =================
-
     if data == "statuses_menu":
         text = statuses.format_list(user_id)
         await render(query, context, text, statuses_menu_keyboard(user_id))
@@ -1629,8 +1652,6 @@ async def button_handler(update, context):
         text = prefix + res["msg"] + "\n\n" + statuses.format_list(user_id)
         await render(query, context, text, statuses_menu_keyboard(user_id))
         return
-
-    # ================= BOSS RUSH =================
 
     if data == "boss_rush_menu":
         text = boss_rush.format_menu(user_id)
@@ -1681,8 +1702,6 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         return
-
-    # ================= RAID =================
 
     if data == "raid_menu":
         if raid.get_active_raid_for_user(user_id):
@@ -1820,8 +1839,6 @@ async def button_handler(update, context):
         await _notify_raid_players(context, rid, notify_ids, exclude=user_id)
         return
 
-    # ================= DOMAIN =================
-
     if data == "domain_activate":
         result = combat.activate_domain_manual(user_id)
         encounter = database.get_encounter(user_id)
@@ -1905,8 +1922,6 @@ async def button_handler(update, context):
                 lines.append("<i>У тебя нет экипированных мастер-техник.</i>")
             await render(query, context, "\n".join(lines), kb_for(user_id))
         return
-
-    # ================= SUBWAY / MOVE / REST / PATROL =================
 
     if data == "subway_open":
         text = subway.format_subway_text(user_id)
@@ -2007,8 +2022,6 @@ async def button_handler(update, context):
             await render(query, context, text, kb_for(user_id), image_path=image_path)
             await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
 
-    # ================= БОЙ =================
-
     elif data == "attack" or data == "defend" or data == "flee" or data.startswith("tech:"):
         if data == "attack":
             result = combat.attack(user_id)
@@ -2065,8 +2078,6 @@ async def button_handler(update, context):
             await render(query, context, text, kb_for(user_id), image_path=district_image_for_x(fresh_player["x"]))
         if result.get("effect"):
             await send_effect_gif(context, query.message.chat_id, result["effect"])
-
-    # ================= ИНВЕНТАРЬ =================
 
     elif data == "inventory":
         if boss_rush.is_rush_active(user_id):
@@ -2166,8 +2177,6 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
         await send_effect_gif(context, query.message.chat_id, "encounter_start", ttl=2)
-
-    # ================= КАРТА / СЮЖЕТ =================
 
     elif data == "map":
         text = "🗺 <b>Карта районов Токио</b>\n\n" + get_world_map_text(x)
@@ -2387,8 +2396,6 @@ async def button_handler(update, context):
         image_path = assets.get_monster_image(encounter["monster_name"])
         await render(query, context, text, kb_for(user_id), image_path=image_path)
 
-    # ================= ПРОФИЛЬ / ДОНАТ / VIP =================
-
     elif data == "profile_menu":
         await render(query, context, profile_text(user_id), profile_menu_keyboard(user_id))
 
@@ -2452,8 +2459,6 @@ async def button_handler(update, context):
         ])
         await render(query, context, text, keyboard)
 
-    # ================= ЗАДАНИЯ =================
-
     elif data == "quests_menu":
         if _gojo_is_sealed(user_id):
             text = (
@@ -2486,8 +2491,6 @@ async def button_handler(update, context):
         prefix = "✅ " if res["ok"] else "ℹ️ "
         text = prefix + res["msg"] + "\n\n" + quests.format_quests_text(user_id, period)
         await render(query, context, text, quests_period_keyboard(period))
-
-    # ================= ГАЧА =================
 
     elif data == "gacha_hub":
         await render(query, context,
@@ -2711,8 +2714,6 @@ async def button_handler(update, context):
         text = ("✅ " if result["ok"] else "❌ ") + result["msg"] + "\n\n" + gacha_menu_text(user_id)
         image_path = assets.get_npc_image("hakari_shop") if context.user_data.get("gacha_from") == "shop" else None
         await render(query, context, text, gacha_rarity_keyboard(user_id, short), image_path=image_path)
-
-    # ================= НПС / МАГАЗИН / ОРУЖИЕ =================
 
     elif data.startswith("npc:"):
         npc_id = data.split(":", 1)[1]

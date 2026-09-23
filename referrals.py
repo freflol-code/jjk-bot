@@ -16,6 +16,7 @@ referrals.py — реферальная система.
 Всё хранится в таблице `referrals` в основной SQLite-базе.
 """
 import time
+from urllib.parse import quote
 
 import database
 
@@ -88,7 +89,6 @@ def register_referral(new_user_id, new_username, referrer_id):
 
     was_existing = _player_exists(new_user_id)
 
-    # создаём игрока в любом случае — это заход в бота
     database.get_or_create_player(new_user_id, new_username or "")
 
     if was_existing:
@@ -106,7 +106,6 @@ def register_referral(new_user_id, new_username, referrer_id):
     if _already_referred(new_user_id):
         return {"ok": True, "referred": False, "reason": "already_referred"}
 
-    # засчитываем
     conn = database.get_conn()
     conn.execute(
         "INSERT INTO referrals (referrer_id, referred_id, created_at) "
@@ -129,6 +128,20 @@ def _build_link(bot_username, user_id):
     if not bot_username:
         return None
     return f"https://t.me/{bot_username}?start=ref_{user_id}"
+
+
+def _build_share_url(bot_username, user_id):
+    """Правильно URL-энкодит share-ссылку для Telegram.
+    Без quote() Telegram ругается Button_url_invalid."""
+    link = _build_link(bot_username, user_id)
+    if not link:
+        return None
+    share_text = "Заходи в «Магическую Битву: Токио» — я уже там!"
+    return (
+        "https://t.me/share/url?"
+        f"url={quote(link, safe='')}"
+        f"&text={quote(share_text, safe='')}"
+    )
 
 
 def format_menu(user_id, bot_username):
@@ -164,12 +177,8 @@ def format_menu(user_id, bot_username):
 def menu_keyboard(user_id, bot_username):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     rows = []
-    link = _build_link(bot_username, user_id)
-    if link:
-        share_text = "Заходи в «Магическую Битву: Токио» — я уже там!"
-        share_url = (
-            f"https://t.me/share/url?url={link}&text={share_text}"
-        )
+    share_url = _build_share_url(bot_username, user_id)
+    if share_url:
         rows.append([InlineKeyboardButton("📤 Поделиться", url=share_url)])
     rows.append([InlineKeyboardButton("⬅️ В профиль", callback_data="profile_menu")])
     return InlineKeyboardMarkup(rows)

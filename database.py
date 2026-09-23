@@ -205,6 +205,14 @@ def init_db():
         )
     """)
 
+    # 🆕 Таблица для ручного выбора Расширения Территории
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS active_domain (
+            user_id        INTEGER PRIMARY KEY,
+            technique_name TEXT NOT NULL
+        )
+    """)
+
     conn.commit()
 
 
@@ -1133,3 +1141,29 @@ def get_active_status(user_id):
     cur.execute("SELECT status_key FROM active_status WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
     return row["status_key"] if row else None
+
+
+# ---------------- Активное Расширение Территории ----------------
+
+def set_active_domain(user_id, technique_name):
+    conn = get_conn()
+    conn.execute(
+        "INSERT INTO active_domain (user_id, technique_name) VALUES (?, ?) "
+        "ON CONFLICT(user_id) DO UPDATE SET technique_name = excluded.technique_name",
+        (user_id, technique_name),
+    )
+    conn.commit()
+
+
+def get_active_domain(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT technique_name FROM active_domain WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    return row["technique_name"] if row else None
+
+
+def clear_active_domain(user_id):
+    conn = get_conn()
+    conn.execute("DELETE FROM active_domain WHERE user_id = ?", (user_id,))
+    conn.commit()

@@ -21,6 +21,7 @@ import consumables
 import bosses
 import boss_rush
 import battle_pass
+import referrals
 import shop
 import quests
 import rest
@@ -549,6 +550,7 @@ def profile_menu_keyboard(user_id):
          InlineKeyboardButton("🌀 Техники", callback_data="profile_techniques")],
         [InlineKeyboardButton("🎭 Статусы", callback_data="statuses_menu"),
          InlineKeyboardButton("🏆 Таблица лидеров", callback_data="profile_leaderboard")],
+        [InlineKeyboardButton("🎁 Рефералы", callback_data="referral_menu")],
     ]
     if database.has_vip(user_id):
         until = database.get_vip_until(user_id)
@@ -913,6 +915,14 @@ def profile_text(user_id):
     except Exception:
         pass
 
+    ref_line = ""
+    try:
+        ref_count = referrals.get_invited_count(user_id)
+        if ref_count > 0:
+            ref_line = f"\n🎁 Приглашено друзей: <b>{ref_count}</b>"
+    except Exception:
+        pass
+
     if database.has_vip(user_id):
         hidden = database.is_vip_badge_hidden(user_id)
         badge_note = " <i>(скрыт)</i>" if hidden else ""
@@ -931,7 +941,7 @@ def profile_text(user_id):
         f"{weapon_line}\n"
         f"🌀 Техник изучено: {len(learned)} · в бою: {len(equipped_tech)}/{config.MAX_EQUIPPED_TECHNIQUES}\n"
         f"⚔️ Оружия в коллекции: {len(weapons_owned)}"
-        f"{ce_line}{status_line}{bp_line}{rank_line}{buffs_line}{cap_line}{vip_line}"
+        f"{ce_line}{status_line}{bp_line}{ref_line}{rank_line}{buffs_line}{cap_line}{vip_line}"
     )
 
 
@@ -1015,8 +1025,39 @@ async def _notify_raid_players(context, raid_id, user_ids, exclude=None):
 
 async def start(update, context):
     user = update.effective_user
-    database.get_or_create_player(user.id, user.username or user.first_name)
     args = context.args or []
+
+    # --- Реферальная ссылка: /start ref_<user_id> ---
+    referral_msg = ""
+    ref_code = None
+    if args and args[0].startswith("ref_"):
+        try:
+            ref_code = int(args[0].split("_", 1)[1])
+        except (ValueError, IndexError):
+            ref_code = None
+
+    if ref_code:
+        res = referrals.register_referral(
+            user.id,
+            user.username or user.first_name,
+            ref_code,
+        )
+        if res.get("referred"):
+            referral_msg = (
+                "\n\n🎁 <b>Ты пришёл по реферальной ссылке!</b>\n"
+                "<i>Твой друг получил 3 дня VIP и 1000💠 за приглашение.</i>"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=ref_code,
+                    text=referrals.format_success_for_referrer(ref_code),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+    else:
+        database.get_or_create_player(user.id, user.username or user.first_name)
+
     if args and args[0].startswith("raid_"):
         try:
             rid = int(args[0].split("_", 1)[1])
@@ -1056,7 +1097,7 @@ async def start(update, context):
             f"изгоняй проклятия, качай Контроль ПЭ и выбивай техники у Хакари. "
             f"Постарайся не умереть в первую же неделю.»\n\n"
         )
-    text = intro + location_text(user.id, 0)
+    text = intro + referral_msg + location_text(user.id, 0)
     image_path = district_image_for_x(0)
     if image_path:
         try:
@@ -1434,6 +1475,13 @@ async def button_handler(update, context):
                      "<i>Хакари: «В клубе не жульничают. Никаких зелий, "
                      "никаких талисманов. Только ты и боссы.»</i>",
                      kb_for(user_id))
+        return
+
+    if data == "referral_menu":
+        bot_name = await _bot_username(context)
+        text = referrals.format_menu(user_id, bot_name)
+        kb = referrals.menu_keyboard(user_id, bot_name)
+        await render(query, context, text, kb)
         return
 
     # ================= BATTLE PASS =================
@@ -2969,6 +3017,10 @@ def main():
         battle_pass._ensure_tables()
     except Exception as e:
         logger.warning(f"Не удалось подготовить таблицы БП: {e}")
+    try:
+        referrals._ensure_tables()
+    except Exception as e:
+        logger.warning(f"Не удалось подготовить таблицы рефералов: {e}")
     migrate_curse_seals()
     app = Application.builder().token(config.BOT_TOKEN).build()
     app.add_error_handler(global_error_handler)

@@ -5,6 +5,9 @@
 Схема бережно мигрируется: init_db() добавляет недостающие колонки
 и таблицы, ничего не удаляя. Существующие игроки, их золото/уровень/HP
 и инвентарь сохраняются при обновлении.
+
+Дополнительные модули могут лениво создавать свои таблицы
+(например, quests.py, rest.py, equipment.py, баффы), не задевая этот файл.
 """
 import sqlite3
 import time
@@ -22,6 +25,7 @@ def get_conn():
 
 
 def _ensure_column(conn, table, column, ddl):
+    """Добавляет колонку, если её ещё нет (безопасная миграция)."""
     cur = conn.cursor()
     cur.execute(f"PRAGMA table_info({table})")
     existing = {row["name"] for row in cur.fetchall()}
@@ -284,6 +288,12 @@ def consume_player_dmg_buff(user_id):
 
 
 def add_exp_and_level(user_id, amount):
+    """
+    Начисляет опыт, при необходимости повышает уровень.
+    Растут HP, макс. ПЭ и Контроль ПЭ.
+    Уровень не может превысить потолок по сюжету: 20 + 10 * (глав пройдено).
+    Возвращает (новый_уровень, сколько_уровней_поднято).
+    """
     from config import EXP_BASE, HP_PER_LEVEL, MAX_CE_PER_LEVEL, CE_CONTROL_PER_LEVEL
     conn = get_conn()
     cur = conn.cursor()
@@ -295,7 +305,12 @@ def add_exp_and_level(user_id, amount):
         cur.execute("SELECT chapter_idx, finished FROM player_story WHERE user_id = ?", (user_id,))
         sr = cur.fetchone()
         if sr:
-            completed = len(__import__("story").CHAPTERS) if sr["finished"] else sr["chapter_idx"]
+            try:
+                import story
+                total_chapters = len(story.CHAPTERS)
+            except Exception:
+                total_chapters = 20
+            completed = total_chapters if sr["finished"] else sr["chapter_idx"]
             max_level = 20 + 10 * completed
     except sqlite3.OperationalError:
         pass
@@ -813,18 +828,27 @@ def vip_mult(user_id):
 
 
 def add_vip_days(user_id, days):
+    """Добавляет N дней VIP. Если VIP активен — суммирует с текущим сроком,
+    если истёк или не было — считает от «сейчас». Реализация без ON CONFLICT,
+    чтобы работать на любой версии SQLite (>= 3.0)."""
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
     cur.execute("SELECT expires_at FROM player_vip WHERE user_id = ?", (user_id,))
     row = cur.fetchone()
-    base = max(now, row["expires_at"] if row else 0)
-    new_expires = base + days * 86400
-    conn.execute(
-        "INSERT INTO player_vip (user_id, expires_at) VALUES (?, ?) "
-        "ON CONFLICT(user_id) DO UPDATE SET expires_at = excluded.expires_at",
-        (user_id, new_expires),
-    )
+    if row is None:
+        new_expires = now + days * 86400
+        conn.execute(
+            "INSERT INTO player_vip (user_id, expires_at) VALUES (?, ?)",
+            (user_id, new_expires),
+        )
+    else:
+        base = max(now, row["expires_at"] or 0)
+        new_expires = base + days * 86400
+        conn.execute(
+            "UPDATE player_vip SET expires_at = ? WHERE user_id = ?",
+            (new_expires, user_id),
+        )
     conn.commit()
 
 
@@ -853,7 +877,6 @@ def set_vip_badge_hidden(user_id, hidden):
 
 
 def toggle_vip_badge(user_id):
-    """Возвращает НОВОЕ состояние (True = скрыт)."""
     current = is_vip_badge_hidden(user_id)
     new_state = not current
     set_vip_badge_hidden(user_id, new_state)
@@ -1039,7 +1062,6 @@ def get_active_heavenly(user_id):
 # ============================================================
 
 def add_player_status(user_id, status_key):
-    """Возвращает True, если статус новый (только что куплен)."""
     conn = get_conn()
     cur = conn.cursor()
     try:

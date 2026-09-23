@@ -8,15 +8,11 @@ referrals.py — реферальная система.
 Правила:
 - Ссылка: https://t.me/<bot_username>?start=ref_<user_id>
 - Награда выдаётся ТОЛЬКО если приглашённый — новый игрок
-  (не было записи в таблице players до перехода по ссылке)
 - Один игрок может быть приглашён только один раз
 - Пригласить самого себя нельзя
-- Реферер должен существовать в БД (иначе реф-ссылка невалидна)
-
-Всё хранится в таблице `referrals` в основной SQLite-базе.
+- Реферер должен существовать в БД
 """
 import time
-from urllib.parse import quote
 
 import database
 
@@ -79,11 +75,9 @@ def register_referral(new_user_id, new_username, referrer_id):
     """Регистрирует игрока и, если он новый и реф-код валиден, засчитывает реферал.
 
     Возвращает dict:
-        {"ok": True, "referred": True}   — реферал засчитан, рефереру выдана награда
+        {"ok": True, "referred": True}   — реферал засчитан, награда выдана
         {"ok": True, "referred": False, "reason": "..."}   — игрок создан, но реферал не засчитан
-        {"ok": False, "reason": "..."}    — что-то не так, игрок не создан (маловероятно)
-
-    ВСЕГДА создаёт/обновляет игрока, даже если реферал не засчитан.
+        {"ok": False, "reason": "..."}   — ошибка
     """
     _ensure_tables()
 
@@ -130,20 +124,6 @@ def _build_link(bot_username, user_id):
     return f"https://t.me/{bot_username}?start=ref_{user_id}"
 
 
-def _build_share_url(bot_username, user_id):
-    """Правильно URL-энкодит share-ссылку для Telegram.
-    Без quote() Telegram ругается Button_url_invalid."""
-    link = _build_link(bot_username, user_id)
-    if not link:
-        return None
-    share_text = "Заходи в «Магическую Битву: Токио» — я уже там!"
-    return (
-        "https://t.me/share/url?"
-        f"url={quote(link, safe='')}"
-        f"&text={quote(share_text, safe='')}"
-    )
-
-
 def format_menu(user_id, bot_username):
     count = get_invited_count(user_id)
     total_vip = count * REWARD_VIP_DAYS
@@ -169,17 +149,25 @@ def format_menu(user_id, bot_username):
     lines.append("<b>Твоя ссылка:</b>")
     lines.append(f"<code>{link}</code>")
     lines.append("")
-    lines.append("<i>Скинь ссылку друзьям. Как только они зайдут — "
-                 "награда придёт автоматически.</i>")
+    lines.append("<i>Нажми «📤 Поделиться» — Telegram предложит выбрать чат.</i>")
     return "\n".join(lines)
 
 
 def menu_keyboard(user_id, bot_username):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     rows = []
-    share_url = _build_share_url(bot_username, user_id)
-    if share_url:
-        rows.append([InlineKeyboardButton("📤 Поделиться", url=share_url)])
+    link = _build_link(bot_username, user_id)
+    if link:
+        # switch_inline_query — единственный надёжный способ поделиться
+        # ссылкой из бота. Обычный https://t.me/share/url?... Telegram
+        # не принимает в кнопках (Button_url_invalid).
+        share_text = f"Заходи в «Магическую Битву: Токио» — я уже там! {link}"
+        if len(share_text) > 250:
+            share_text = share_text[:250]
+        rows.append([InlineKeyboardButton(
+            "📤 Поделиться",
+            switch_inline_query=share_text,
+        )])
     rows.append([InlineKeyboardButton("⬅️ В профиль", callback_data="profile_menu")])
     return InlineKeyboardMarkup(rows)
 

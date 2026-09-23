@@ -96,6 +96,7 @@ def init_db():
     _ensure_column(conn, "players", "dmg_buff_turns", "dmg_buff_turns INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "players", "dmg_buff_mult", "dmg_buff_mult REAL NOT NULL DEFAULT 1.0")
     _ensure_column(conn, "players", "hide_vip_badge", "hide_vip_badge INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "players", "welcome_bonus", "welcome_bonus INTEGER NOT NULL DEFAULT 0")
 
     _ensure_column(conn, "encounters", "curse_class", "curse_class TEXT")
     _ensure_column(conn, "encounters", "drop_item", "drop_item TEXT")
@@ -189,7 +190,6 @@ def init_db():
         )
     """)
 
-    # --- Косметические статусы профиля ---
     cur.execute("""
         CREATE TABLE IF NOT EXISTS player_statuses (
             user_id     INTEGER NOT NULL,
@@ -288,12 +288,6 @@ def consume_player_dmg_buff(user_id):
 
 
 def add_exp_and_level(user_id, amount):
-    """
-    Начисляет опыт, при необходимости повышает уровень.
-    Растут HP, макс. ПЭ и Контроль ПЭ.
-    Уровень не может превысить потолок по сюжету: 20 + 10 * (глав пройдено).
-    Возвращает (новый_уровень, сколько_уровней_поднято).
-    """
     from config import EXP_BASE, HP_PER_LEVEL, MAX_CE_PER_LEVEL, CE_CONTROL_PER_LEVEL
     conn = get_conn()
     cur = conn.cursor()
@@ -340,6 +334,30 @@ def add_exp_and_level(user_id, amount):
         cur.execute("UPDATE players SET exp = ? WHERE user_id = ?", (exp, user_id))
     conn.commit()
     return level, leveled
+
+
+# ---------------- Welcome bonus ----------------
+
+def has_welcome_bonus(user_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT welcome_bonus FROM players WHERE user_id = ?", (user_id,))
+    row = cur.fetchone()
+    if not row:
+        return False
+    try:
+        return bool(row["welcome_bonus"])
+    except (IndexError, KeyError):
+        return False
+
+
+def set_welcome_bonus_claimed(user_id):
+    conn = get_conn()
+    conn.execute(
+        "UPDATE players SET welcome_bonus = 1 WHERE user_id = ?",
+        (user_id,),
+    )
+    conn.commit()
 
 
 # ---------------- Инвентарь ----------------
@@ -829,8 +847,8 @@ def vip_mult(user_id):
 
 def add_vip_days(user_id, days):
     """Добавляет N дней VIP. Если VIP активен — суммирует с текущим сроком,
-    если истёк или не было — считает от «сейчас». Реализация без ON CONFLICT,
-    чтобы работать на любой версии SQLite (>= 3.0)."""
+    если истёк или не было — считает от «сейчас». Без ON CONFLICT,
+    чтобы работать на любой версии SQLite."""
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
@@ -1057,9 +1075,7 @@ def get_active_heavenly(user_id):
     return row["heavenly_key"] if row else None
 
 
-# ============================================================
-#  КОСМЕТИЧЕСКИЕ СТАТУСЫ ПРОФИЛЯ
-# ============================================================
+# ---------------- Косметические статусы ----------------
 
 def add_player_status(user_id, status_key):
     conn = get_conn()

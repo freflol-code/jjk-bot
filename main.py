@@ -39,6 +39,7 @@ from ce_types_data import (
     CE_TYPES, CLANS, HEAVENLY_RESTRICTIONS,
     CE_GACHA_ROLL_COST, CE_GACHA_ROLL_COST_X10, CLAN_GACHA_ROLL_COST,
 )
+from domains_data import DOMAINS
 from world import get_district_by_x, get_world_map_text, get_neighbor_district
 from loot import format_loot_line
 
@@ -282,6 +283,17 @@ def gacha_list_keyboard(user_id):
             continue
         em = config.GACHA_RARITY_EMOJI.get(rarity, "")
         rows.append([InlineKeyboardButton(f"{em} {rarity} ({cnt})", callback_data=f"gacha_rarity:{short}")])
+
+    # 🌌 Расширения Территории
+    unlocked_domains = combat.get_all_unlocked_domains(user_id)
+    if unlocked_domains:
+        active = database.get_active_domain(user_id)
+        active_mark = " 🎯" if active else ""
+        rows.append([InlineKeyboardButton(
+            f"🌌 Расширения Территории ({len(unlocked_domains)}){active_mark}",
+            callback_data="gacha_domains",
+        )])
+
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_back_to_menu")])
     return InlineKeyboardMarkup(rows)
 
@@ -306,6 +318,29 @@ def gacha_rarity_keyboard(user_id, short):
             rows.append([InlineKeyboardButton(f"✅ {t['emoji']} {name} (снять)", callback_data=f"gq:u:{short}:{i}")])
         else:
             rows.append([InlineKeyboardButton(f"{t['emoji']} {name} (взять)", callback_data=f"gq:e:{short}:{i}")])
+    rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_list")])
+    return InlineKeyboardMarkup(rows)
+
+
+def gacha_domains_keyboard(user_id):
+    unlocked = combat.get_all_unlocked_domains(user_id)
+    active = database.get_active_domain(user_id)
+    equipped = set(gacha.get_equipped(user_id))
+    rows = []
+    for idx, name in enumerate(unlocked):
+        domain_key = combat._find_domain_by_technique(name)
+        dd = DOMAINS.get(domain_key, {}) if domain_key else {}
+        domain_name = dd.get("name", name)
+        domain_emoji = dd.get("emoji", "🌌")
+        is_active = (name == active)
+        marker = "🎯 " if is_active else ""
+        eq_marker = " ⚔️" if name in equipped else ""
+        rows.append([InlineKeyboardButton(
+            f"{marker}{domain_emoji} {domain_name}{eq_marker}",
+            callback_data=f"gacha_domain_select:{idx}",
+        )])
+    if active:
+        rows.append([InlineKeyboardButton("❎ Сбросить выбор", callback_data="gacha_domain_clear")])
     rows.append([InlineKeyboardButton("⬅️ Назад", callback_data="gacha_list")])
     return InlineKeyboardMarkup(rows)
 
@@ -2650,6 +2685,70 @@ async def button_handler(update, context):
             image_path = assets.get_npc_image("hakari_shop")
         await render(query, context, gacha_menu_text(user_id),
                      gacha_rarity_keyboard(user_id, short), image_path=image_path)
+
+    # 🌌 Расширения Территории — ручной выбор домена
+    elif data == "gacha_domains":
+        unlocked = combat.get_all_unlocked_domains(user_id)
+        if not unlocked:
+            await render(
+                query, context,
+                "🌌 <b>Расширения Территории</b>\n\n"
+                "<i>У тебя пока нет разблокированных доменов. "
+                "Используй мастер-технику в бою 20 раз — тогда откроется её домен.</i>",
+                gacha_list_keyboard(user_id),
+            )
+            return
+        active = database.get_active_domain(user_id)
+        lines = ["🌌 <b>Выбор Расширения Территории</b>", ""]
+        if active:
+            dk = combat._find_domain_by_technique(active)
+            dd = DOMAINS.get(dk, {}) if dk else {}
+            lines.append(f"🎯 Активен: {dd.get('emoji','')} <b>{dd.get('name', active)}</b>")
+        else:
+            lines.append("🎯 Активный домен: <i>автоматически</i>")
+        lines.append("")
+        lines.append("<i>Выбери домен, который будет активироваться кнопкой "
+                     "«🌌 Использовать домен» в бою.</i>")
+        lines.append("<i>⚔️ — техника также находится в боевом наборе.</i>")
+        lines.append("")
+        lines.append("<i>Домены, которые не в боевом наборе, всё равно можно "
+                     "активировать вручную.</i>")
+        await render(query, context, "\n".join(lines), gacha_domains_keyboard(user_id))
+        return
+
+    elif data.startswith("gacha_domain_select:"):
+        try:
+            idx = int(data.split(":", 1)[1])
+        except ValueError:
+            idx = -1
+        unlocked = combat.get_all_unlocked_domains(user_id)
+        if idx < 0 or idx >= len(unlocked):
+            await render(query, context, "❌ Домен недоступен.",
+                         gacha_domains_keyboard(user_id))
+            return
+        name = unlocked[idx]
+        database.set_active_domain(user_id, name)
+        dk = combat._find_domain_by_technique(name)
+        dd = DOMAINS.get(dk, {}) if dk else {}
+        text = (
+            f"✅ <b>Активный домен:</b> {dd.get('emoji','')} "
+            f"<b>{dd.get('name', name)}</b>\n\n"
+            f"<i>{dd.get('effect', '')}</i>\n\n"
+            f"<i>Теперь кнопка «🌌 Использовать домен» в бою будет "
+            f"активировать именно этот домен.</i>"
+        )
+        await render(query, context, text, gacha_domains_keyboard(user_id))
+        return
+
+    elif data == "gacha_domain_clear":
+        database.clear_active_domain(user_id)
+        text = (
+            "✅ <b>Выбор домена сброшен.</b>\n\n"
+            "<i>Бот снова будет использовать первую разблокированную "
+            "мастер-технику из боевого набора.</i>"
+        )
+        await render(query, context, text, gacha_domains_keyboard(user_id))
+        return
 
     elif data == "gacha_roll1":
         result = gacha.roll_once(user_id)
